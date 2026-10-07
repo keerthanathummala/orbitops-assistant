@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(foreach \\($c in 'ollama','python','py','node','npm'\\) { $x = Get-Command $c -ErrorAction SilentlyContinue; if \\($x\\) { \"$c : found\" } else { \"$c : MISSING\" } }; Test-Path backend\\\\.venv; Test-Path frontend\\\\node_modules; Test-Path backend\\\\.env)"
+    ]
+  }
+}

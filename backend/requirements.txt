@@ -1,0 +1,16 @@
+fastapi
+uvicorn[standard]
+python-multipart
+langchain-ollama
+langgraph
+langchain-core
+httpx
+pydantic
+rank-bm25
+sentence-transformers
+chromadb
+scikit-learn
+numpy
+pandas
+python-docx
+pypdf
