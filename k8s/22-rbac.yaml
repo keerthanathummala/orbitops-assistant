@@ -1,0 +1,38 @@
+# AIOps: lets the backend read (never change) the state of its own namespace
+# -- pods, logs, events, deployments, autoscalers -- for the cluster tools
+# and the health check (backend/app/cluster_ops.py).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: orbitops-backend
+  namespace: orbitops
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: orbitops-observer
+  namespace: orbitops
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "events", "services"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets", "statefulsets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: orbitops-backend-observer
+  namespace: orbitops
+subjects:
+  - kind: ServiceAccount
+    name: orbitops-backend
+    namespace: orbitops
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: orbitops-observer

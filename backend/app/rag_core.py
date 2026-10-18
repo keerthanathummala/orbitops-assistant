@@ -471,6 +471,17 @@ class RagSession:
             self.embeddings = np.vstack([self.embeddings, new_embeddings])
         index_documents_chroma(self.collection_name, new_chunks, self.model)
 
+    def retrieve(self, query: str, top_k: int = 4) -> List[Document]:
+        """Hybrid retrieval only (no LLM call) -- used by cluster_ops to pull
+        the runbooks relevant to a live incident."""
+        clean_query, flagged = guardrails.sanitise_query(query)
+        if flagged:
+            return []
+        return hybrid_retrieve(
+            clean_query, self.chunks, self.bm25_index, self.embeddings, self.model,
+            self.collection_name, top_k=top_k,
+        )
+
     def answer(self, query: str, top_k: int = 12) -> dict:
         # top_k was 4 (fine for the short graded OrbitOps docs, ~180-char
         # chunks each). Once uploads can be full reports (10-20 pages, 150+

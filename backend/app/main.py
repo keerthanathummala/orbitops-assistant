@@ -33,6 +33,7 @@ from . import rag_core
 from . import google_search
 from . import file_extract
 from . import guardrails
+from . import cluster_ops
 from .rate_limit import check_rate_limit
 
 app = FastAPI(title="OrbitOps Assistant API")
@@ -55,6 +56,7 @@ APP_VERSION = os.environ.get("APP_VERSION", "dev")
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5MB — generous for text/docx/pdf notes, not for abuse
 CHAT_RATE_LIMIT = (20, 60)      # 20 messages / 60s per thread
 UPLOAD_RATE_LIMIT = (10, 60)    # 10 uploads / 60s per thread
+HEALTH_CHECK_RATE_LIMIT = (6, 60)  # each check reads the cluster + calls the LLM
 
 
 @app.on_event("startup")
@@ -193,3 +195,39 @@ def status(thread_id: str):
     _require_valid_thread_id(thread_id)
     docs_indexed = dispatcher.docs_indexed_count(thread_id)
     return {"docs_indexed": docs_indexed, "google_search": google_search.quota_status()}
+
+
+# ---------------------------------------------------------------------------
+# AIOps: one-click health check of the live deployment
+# ---------------------------------------------------------------------------
+
+@app.post("/api/ops/health-check")
+def ops_health_check(thread_id: str = Form(...)):
+    """Scans the app's Kubernetes namespace, flags problems with rule-based
+    checks and has the LLM write an incident summary. The result is also
+    saved into the chat so it stays in the conversation history."""
+    _require_valid_thread_id(thread_id)
+    if not check_rate_limit(f"health:{thread_id}", *HEALTH_CHECK_RATE_LIMIT):
+        raise HTTPException(429, "Too many health checks — try again shortly.")
+
+    session = rag_core.get_or_create_session(thread_id)
+    result = cluster_ops.health_check(rag_session=session)
+
+    label = {"healthy": "Healthy", "warning": "Warning", "critical": "Critical",
+             "unavailable": "Unavailable"}[result["status"]]
+    lines = [f"Health check: {label}", ""]
+    for issue in result["issues"]:
+        lines.append(f"[{issue['severity'].upper()}] {issue['object']}: {issue['problem']}")
+    if result["issues"]:
+        lines.append("")
+    lines.append(result["summary"])
+    text = "\n".join(lines)
+
+    store.ensure_thread(thread_id, title_hint="Cluster health check")
+    store.add_message(thread_id, "user", "Run a cluster health check")
+    store.add_message(thread_id, "assistant", text, source="ops",
+                      citations=json.dumps(result["citations"]) if result["citations"] else None)
+    store.set_title_from_first_message(thread_id, "Cluster health check")
+
+    return {"thread_id": thread_id, "status": result["status"], "issues": result["issues"],
+            "text": text, "citations": result["citations"]}

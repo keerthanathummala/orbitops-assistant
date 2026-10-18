@@ -17,4 +17,5 @@ python-docx
 pypdf
 pymysql
 redis
+kubernetes
 cryptography
