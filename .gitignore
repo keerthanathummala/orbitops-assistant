@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Local runtime data (chat history, vector store) -- never commit
+backend/app/chat_history.db
+backend/app/chroma_store/
+
+# Secrets
+.env
+backend/.env
+k8s/secrets.yaml
+
+# Frontend
+node_modules/
+dist/
