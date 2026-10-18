@@ -14,7 +14,7 @@ Security/safety measures (see guardrails.py, rate_limit.py for the "why"):
   - CORS restricted to configured origins instead of "*".
 
 Run with:  uvicorn app.main:app --reload --port 8000
-Requires:  Ollama running locally with `qwen2.5:7b` pulled (`ollama serve`).
+Requires:  GEMINI_API_KEY set (default), or LLM_PROVIDER=ollama with Ollama running.
 """
 
 from __future__ import annotations

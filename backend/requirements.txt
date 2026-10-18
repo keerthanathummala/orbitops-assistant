@@ -2,6 +2,7 @@ fastapi
 uvicorn[standard]
 python-multipart
 langchain-ollama
+langchain-google-genai
 langgraph
 langchain-core
 httpx

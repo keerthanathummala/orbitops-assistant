@@ -39,8 +39,6 @@ import re
 from typing import TypedDict, Annotated, List, Optional
 
 import httpx
-from langchain_ollama import ChatOllama
-from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 from langgraph.graph import StateGraph, START, END
@@ -48,28 +46,7 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from . import google_search
 from . import guardrails
-
-MODEL = "qwen2.5:7b"
-_llm: Optional[ChatOllama] = None
-_llm_creative: Optional[ChatOllama] = None
-
-
-def get_llm() -> ChatOllama:
-    global _llm
-    if _llm is None:
-        # See rag_core.get_llm for why num_predict is set explicitly --
-        # without it Ollama's own default (~128 tokens) silently truncates
-        # longer answers (e.g. a requested list of points) mid-sentence.
-        _llm = ChatOllama(model=MODEL, temperature=0, num_predict=4096)
-    return _llm
-
-
-def get_llm_creative() -> ChatOllama:
-    global _llm_creative
-    if _llm_creative is None:
-        _llm_creative = ChatOllama(model=MODEL, temperature=0.3, num_predict=4096)
-    return _llm_creative
-
+from . import llm
 
 # ---------------------------------------------------------------------------
 # Tools
@@ -379,7 +356,7 @@ def analyse_node(state: AgentState) -> dict:
     intros like "Here is your report" -- begin writing the Direct Answer
     section immediately.
     """
-    response = get_llm_creative().invoke([HumanMessage(content=combined_prompt)]).content.strip()
+    response = llm.generate(combined_prompt, temperature=0.3)
 
     if not response or len(response.strip()) < 20:
         return {

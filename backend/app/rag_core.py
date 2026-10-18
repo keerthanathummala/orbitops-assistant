@@ -3,8 +3,9 @@ RAG pipeline — ported from COMP2701 Assessment 1 (BM25 + dense + ChromaDB + hy
 
 Changes from the original notebook:
   - generate_answer_from_context() no longer returns a raw chunk via keyword-overlap
-    heuristic. It now calls a local Ollama model (qwen2.5:7b) with the grounded
-    prompt built by build_prompt(), exactly like the Agent pipeline does.
+    heuristic. It now calls the configured LLM (see llm.py: hosted Gemini, or
+    local Ollama) with the grounded prompt built by build_prompt(), exactly
+    like the Agent pipeline does.
   - Added support for per-session uploaded documents that are indexed ON TOP of the
     base OrbitOps corpus (not a replacement), capped at MAX_UPLOADS documents.
     Each chat session (thread_id) gets its own Chroma collection name so uploads
@@ -24,10 +25,9 @@ import chromadb
 from rank_bm25 import BM25Okapi
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
-from langchain_ollama import ChatOllama
-from langchain_core.messages import HumanMessage
 
 from . import guardrails
+from . import llm
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data" / "docs"
@@ -35,10 +35,8 @@ CHROMA_DIR = BASE_DIR / "chroma_store"
 BASE_COLLECTION_NAME = "orbitops_base"
 MAX_UPLOADS = 10
 EMBED_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
-OLLAMA_MODEL = "qwen2.5:7b"
 
 _embed_model: Optional[SentenceTransformer] = None
-_llm: Optional[ChatOllama] = None
 
 
 def get_embed_model() -> SentenceTransformer:
@@ -46,19 +44,6 @@ def get_embed_model() -> SentenceTransformer:
     if _embed_model is None:
         _embed_model = SentenceTransformer(EMBED_MODEL_NAME)
     return _embed_model
-
-
-def get_llm() -> ChatOllama:
-    global _llm
-    if _llm is None:
-        # num_predict wasn't set, so Ollama fell back to its own default
-        # (~128 tokens) -- fine for a short answer, but it silently cut off
-        # longer ones (e.g. "list out all the points") mid-sentence. Raised
-        # to 4096 (generous for any realistic answer) rather than -1
-        # (truly unbounded) to still keep a hard ceiling on worst-case
-        # generation time on a shared, single-worker backend.
-        _llm = ChatOllama(model=OLLAMA_MODEL, temperature=0, num_predict=4096)
-    return _llm
 
 
 @dataclass
@@ -385,8 +370,7 @@ def generate_answer_from_context(query: str, retrieved_chunks: List[Document]) -
         context = build_context(retrieved_chunks, max_chunks=12)
         prompt = build_prompt(query, context)
 
-    response = get_llm().invoke([HumanMessage(content=prompt)])
-    return response.content.strip()
+    return llm.generate(prompt)
 
 
 # ---------------------------------------------------------------------------
