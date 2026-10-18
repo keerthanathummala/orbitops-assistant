@@ -54,6 +54,7 @@ gcloud builds submit frontend --tag $REG/frontend:v1
 ```bash
 gcloud container clusters create orbitops \
   --zone $REGION-a --machine-type e2-standard-2 \
+  --disk-type pd-standard --disk-size 30 \
   --num-nodes 2 --enable-autoscaling --min-nodes 2 --max-nodes 4
 gcloud container clusters get-credentials orbitops --zone $REGION-a
 ```
