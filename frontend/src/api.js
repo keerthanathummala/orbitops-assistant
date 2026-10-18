@@ -1,4 +1,6 @@
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+// In the container build VITE_API_URL is set to "" so requests go to the same
+// origin (/api/...), which nginx proxies to the backend service. Hence ?? not ||.
+const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
 
 export async function sendChat(threadId, message) {
   const res = await fetch(`${API_BASE}/api/chat`, {
