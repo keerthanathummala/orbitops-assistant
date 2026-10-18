@@ -50,6 +50,8 @@ app.add_middleware(
     allow_headers=["Content-Type"],
 )
 
+APP_VERSION = os.environ.get("APP_VERSION", "dev")
+
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5MB — generous for text/docx/pdf notes, not for abuse
 CHAT_RATE_LIMIT = (20, 60)      # 20 messages / 60s per thread
 UPLOAD_RATE_LIMIT = (10, 60)    # 10 uploads / 60s per thread
@@ -63,6 +65,27 @@ def startup():
 def _require_valid_thread_id(thread_id: str) -> None:
     if not guardrails.is_valid_thread_id(thread_id):
         raise HTTPException(400, "Invalid thread_id.")
+
+
+# ---------------------------------------------------------------------------
+# Health checks (Kubernetes liveness/readiness probes)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/health")
+def health():
+    """Liveness: the process is up and serving requests."""
+    return {"status": "ok", "version": APP_VERSION, "pod": os.environ.get("HOSTNAME", "")}
+
+
+@app.get("/api/ready")
+def ready():
+    """Readiness: the database is reachable. A rolling update only sends
+    traffic to a new pod once this passes."""
+    try:
+        store.ping()
+    except Exception:
+        raise HTTPException(503, "database unavailable")
+    return {"status": "ready"}
 
 
 # ---------------------------------------------------------------------------
