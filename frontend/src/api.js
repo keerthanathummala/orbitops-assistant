@@ -39,3 +39,9 @@ export async function fetchStatus(threadId) {
   if (!res.ok) return null
   return res.json()
 }
+
+export async function fetchHealth() {
+  const res = await fetch(`${API_BASE}/api/health`)
+  if (!res.ok) return null
+  return res.json()
+}

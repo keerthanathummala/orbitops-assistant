@@ -36,7 +36,7 @@ export default function CoverPage({ onContinue }) {
       </button>
 
       <div style={{ fontSize: 12, color: colors.textFaint, marginTop: 18 }}>
-        Runs locally on qwen2.5:7b via Ollama — a student project, not a production or commercial service.
+        A student project deployed on Google Cloud, not a production or commercial service.
       </div>
     </div>
   )

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { colors, fonts } from './theme'
-import { sendChat, fetchThreads, fetchThreadMessages, uploadDocument, fetchStatus } from './api'
+import { sendChat, fetchThreads, fetchThreadMessages, uploadDocument, fetchStatus, fetchHealth } from './api'
 import CoverPage from './CoverPage'
 
 const THREAD_IDS_KEY = 'compass_thread_ids'
@@ -30,6 +30,9 @@ export default function App() {
   const [status, setStatus] = useState({ docs_indexed: 0, google_search: null })
   const [uploadedCount, setUploadedCount] = useState(0)
   const [error, setError] = useState('')
+  // Which backend pod/version answered last -- makes load balancing and
+  // rolling updates visible when demoing the Kubernetes deployment.
+  const [served, setServed] = useState(null)
   const fileInputRef = useRef(null)
   const scrollRef = useRef(null)
 
@@ -49,6 +52,10 @@ export default function App() {
     fetchThreadMessages(activeThread).then(setMessages).catch(() => {})
     fetchStatus(activeThread).then((s) => s && setStatus(s)).catch(() => {})
   }, [activeThread])
+
+  useEffect(() => {
+    fetchHealth().then(setServed).catch(() => {})
+  }, [])
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
@@ -91,6 +98,7 @@ export default function App() {
         ...res.segments.map((seg) => ({ role: 'assistant', content: seg.text, source: seg.source, citations: seg.citations })),
       ])
       fetchStatus(res.thread_id).then((s) => s && setStatus(s)).catch(() => {})
+      fetchHealth().then(setServed).catch(() => {})
     } catch (e) {
       setError(e.message || 'Something went wrong — is the backend running?')
     } finally {
@@ -279,7 +287,9 @@ export default function App() {
             </button>
           </div>
           <div style={{ textAlign: 'center', fontSize: 11, color: colors.textFaint, marginTop: 10 }}>
-            Runs locally on qwen2.5:7b via Ollama — no data leaves this machine except GitHub, HackerNews &amp; Search lookups.
+            {served?.pod
+              ? `Served by pod ${served.pod} · version ${served.version}`
+              : 'Answers from the OrbitOps docs, GitHub, HackerNews & Google Search.'}
           </div>
         </div>
       </div>
