@@ -1,5 +1,10 @@
 """
-SQLite persistence for chat history.
+Persistence for chat history and uploaded documents.
+
+MySQL when MYSQL_HOST is set (the cloud deployment: one database shared by
+every backend replica, so a chat's history doesn't depend on which pod the
+load balancer picks, and survives rolling updates). Otherwise a local SQLite
+file, so the app still runs on a dev machine with no database server.
 
 Replaces relying on LangGraph's in-memory MemorySaver for durability: that
 checkpointer only lives as long as the backend process does, so a restart
@@ -16,16 +21,19 @@ project, not a substitute for real auth.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
-DB_PATH = Path(__file__).resolve().parent / "chat_history.db"
+MYSQL_HOST = os.environ.get("MYSQL_HOST", "")
+DB_PATH = Path(os.environ.get("SQLITE_PATH", Path(__file__).resolve().parent / "chat_history.db"))
 
-SCHEMA = """
+SQLITE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS threads (
     thread_id   TEXT PRIMARY KEY,
     title       TEXT NOT NULL,
@@ -42,23 +50,111 @@ CREATE TABLE IF NOT EXISTS messages (
     created_at  TEXT NOT NULL,
     FOREIGN KEY (thread_id) REFERENCES threads (thread_id)
 );
+
+CREATE TABLE IF NOT EXISTS uploads (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    thread_id   TEXT NOT NULL,
+    filename    TEXT NOT NULL,
+    content     TEXT NOT NULL,       -- extracted text, not the raw file
+    created_at  TEXT NOT NULL
+)
 """
+
+MYSQL_SCHEMA = """
+CREATE TABLE IF NOT EXISTS threads (
+    thread_id   VARCHAR(36) PRIMARY KEY,
+    title       VARCHAR(255) NOT NULL,
+    created_at  VARCHAR(40) NOT NULL
+) CHARACTER SET utf8mb4;
+
+CREATE TABLE IF NOT EXISTS messages (
+    id          BIGINT PRIMARY KEY AUTO_INCREMENT,
+    thread_id   VARCHAR(36) NOT NULL,
+    role        VARCHAR(16) NOT NULL,
+    content     MEDIUMTEXT NOT NULL,
+    source      VARCHAR(16),
+    citations   TEXT,
+    created_at  VARCHAR(40) NOT NULL,
+    INDEX idx_messages_thread (thread_id),
+    FOREIGN KEY (thread_id) REFERENCES threads (thread_id)
+) CHARACTER SET utf8mb4;
+
+CREATE TABLE IF NOT EXISTS uploads (
+    id          BIGINT PRIMARY KEY AUTO_INCREMENT,
+    thread_id   VARCHAR(36) NOT NULL,
+    filename    VARCHAR(255) NOT NULL,
+    content     MEDIUMTEXT NOT NULL,
+    created_at  VARCHAR(40) NOT NULL,
+    INDEX idx_uploads_thread (thread_id)
+) CHARACTER SET utf8mb4
+"""
+
+
+class _Conn:
+    """Tiny wrapper so the queries below are written once with '?'
+    placeholders and run unchanged on SQLite or MySQL."""
+
+    def __init__(self, raw, mysql: bool):
+        self.raw = raw
+        self.mysql = mysql
+
+    def execute(self, sql: str, params=()):
+        if self.mysql:
+            cur = self.raw.cursor()
+            cur.execute(sql.replace("?", "%s"), params)
+            return cur
+        return self.raw.execute(sql, params)
+
+
+def _connect():
+    if MYSQL_HOST:
+        import pymysql
+        raw = pymysql.connect(
+            host=MYSQL_HOST,
+            port=int(os.environ.get("MYSQL_PORT", "3306")),
+            user=os.environ.get("MYSQL_USER", "orbitops"),
+            password=os.environ.get("MYSQL_PASSWORD", ""),
+            database=os.environ.get("MYSQL_DATABASE", "orbitops"),
+            charset="utf8mb4",
+            cursorclass=pymysql.cursors.DictCursor,
+        )
+        return _Conn(raw, mysql=True)
+    raw = sqlite3.connect(DB_PATH)
+    raw.row_factory = sqlite3.Row
+    return _Conn(raw, mysql=False)
 
 
 @contextmanager
 def _conn():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+    conn = _connect()
     try:
         yield conn
-        conn.commit()
+        conn.raw.commit()
     finally:
-        conn.close()
+        conn.raw.close()
 
 
-def init_db() -> None:
+def init_db(retries: int = 30, delay: float = 2.0) -> None:
+    # In Kubernetes/compose the database container may still be starting
+    # when the backend boots, so retry instead of crashing straight away.
+    for attempt in range(retries):
+        try:
+            with _conn() as conn:
+                schema = MYSQL_SCHEMA if conn.mysql else SQLITE_SCHEMA
+                for statement in schema.split(";"):
+                    if statement.strip():
+                        conn.execute(statement)
+            return
+        except Exception:
+            if attempt == retries - 1:
+                raise
+            time.sleep(delay)
+
+
+def ping() -> None:
+    """Raises if the database is unreachable (used by the health check)."""
     with _conn() as conn:
-        conn.executescript(SCHEMA)
+        conn.execute("SELECT 1")
 
 
 def new_thread_id() -> str:
@@ -144,3 +240,51 @@ def set_title_from_first_message(thread_id: str, message: str) -> None:
         ).fetchone()
         if row["c"] <= 1:
             conn.execute("UPDATE threads SET title = ? WHERE thread_id = ?", (message[:60], thread_id))
+
+
+def get_agent_history(thread_id: str, max_turns: int = 10) -> List[dict]:
+    """Previous Agent turns in this thread as [{'role', 'content'}, ...]
+    pairs, which is the shape agent_core's chat_history expects. Only turns
+    the Agent answered are included, matching what its own checkpoint used
+    to hold. Read from the database so it's the same on every replica."""
+    history: List[dict] = []
+    last_user: Optional[str] = None
+    for m in get_messages(thread_id):
+        if m["role"] == "user":
+            last_user = m["content"]
+        elif m["source"] == "agent" and last_user is not None:
+            history += [{"role": "user", "content": last_user},
+                        {"role": "assistant", "content": m["content"]}]
+            last_user = None
+    return history[-2 * max_turns:]
+
+
+# ---------------------------------------------------------------------------
+# Uploaded documents (extracted text), shared by every backend replica
+# ---------------------------------------------------------------------------
+
+def add_upload(thread_id: str, filename: str, content: str) -> None:
+    with _conn() as conn:
+        conn.execute(
+            "INSERT INTO uploads (thread_id, filename, content, created_at) VALUES (?, ?, ?, ?)",
+            (thread_id, filename[:255], content, datetime.now(timezone.utc).isoformat()),
+        )
+
+
+def count_uploads(thread_id: str) -> int:
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS c FROM uploads WHERE thread_id = ?", (thread_id,)
+        ).fetchone()
+        return int(row["c"])
+
+
+def get_uploads(thread_id: str, offset: int = 0) -> List[dict]:
+    """Uploads in the order they were added, skipping the first `offset`
+    (the ones a pod has already indexed)."""
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT filename, content FROM uploads WHERE thread_id = ? ORDER BY id ASC",
+            (thread_id,),
+        ).fetchall()
+        return [dict(r) for r in rows][offset:]

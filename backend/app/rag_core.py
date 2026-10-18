@@ -10,10 +10,22 @@ Changes from the original notebook:
     base OrbitOps corpus (not a replacement), capped at MAX_UPLOADS documents.
     Each chat session (thread_id) gets its own Chroma collection name so uploads
     from one user never leak into another user's retrieval.
+
+Changes for running as several replicas on Kubernetes:
+  - Chroma is reached over HTTP (CHROMA_HOST/CHROMA_PORT) when configured, so
+    every backend pod shares one vector store instead of each keeping its own
+    copy on local disk. Without CHROMA_HOST it falls back to the on-disk
+    PersistentClient for local development.
+  - Uploaded documents are persisted in the chat database (store.py). Each
+    pod's in-memory RagSession (BM25 + dense index) syncs from there, so an
+    upload handled by one pod is visible to questions answered by another.
+  - Chroma writes use upsert() rather than reset + add, so two pods building
+    the same session's collection can't wipe or duplicate each other's work.
 """
 
 from __future__ import annotations
 
+import os
 import re
 import json
 from pathlib import Path
@@ -28,6 +40,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 from . import guardrails
 from . import llm
+from . import store
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data" / "docs"
@@ -189,9 +202,21 @@ def dense_retrieve(query: str, chunks: List[Document], embeddings: np.ndarray, m
 # ChromaDB
 # ---------------------------------------------------------------------------
 
+CHROMA_HOST = os.environ.get("CHROMA_HOST", "")
+CHROMA_PORT = int(os.environ.get("CHROMA_PORT", "8000"))
+
+_client = None
+
+
 def get_client():
-    CHROMA_DIR.mkdir(parents=True, exist_ok=True)
-    return chromadb.PersistentClient(path=str(CHROMA_DIR))
+    global _client
+    if _client is None:
+        if CHROMA_HOST:
+            _client = chromadb.HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)
+        else:
+            CHROMA_DIR.mkdir(parents=True, exist_ok=True)
+            _client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+    return _client
 
 
 def reset_collection(collection_name: str) -> None:
@@ -219,7 +244,7 @@ def index_documents_chroma(collection_name: str, chunked_docs: List[Document], m
         for doc in chunked_docs
     ]
     embeddings = model.encode(texts, convert_to_numpy=True).tolist()
-    collection.add(ids=ids, embeddings=embeddings, metadatas=metadatas, documents=texts)
+    collection.upsert(ids=ids, embeddings=embeddings, metadatas=metadatas, documents=texts)
 
 
 def chroma_retrieve(collection_name: str, query: str, top_k: int = 5) -> dict:
@@ -403,13 +428,26 @@ class RagSession:
         self.bm25_index, _ = build_bm25_index(self.chunks) if self.chunks else (None, None)
         self.embeddings = build_dense_index(self.chunks, self.model)
 
-        reset_collection(self.collection_name)
         index_documents_chroma(self.collection_name, self.chunks, self.model)
+        self.sync_uploads()
 
     def add_uploaded_document(self, filename: str, raw_text: str) -> None:
-        if self.uploaded_count >= MAX_UPLOADS:
+        # The limit is checked against the shared database, not this pod's
+        # own count, so it holds across replicas.
+        self.sync_uploads()
+        if store.count_uploads(self.thread_id) >= MAX_UPLOADS:
             raise ValueError(f"Upload limit reached ({MAX_UPLOADS} documents max per session).")
 
+        store.add_upload(self.thread_id, filename, raw_text)
+        self.sync_uploads()
+
+    def sync_uploads(self) -> None:
+        """Index any uploads for this thread that this pod hasn't seen yet
+        (whether this pod or another one received them)."""
+        for upload in store.get_uploads(self.thread_id, offset=self.uploaded_count):
+            self._index_upload(upload["filename"], upload["content"])
+
+    def _index_upload(self, filename: str, raw_text: str) -> None:
         doc_dict = {
             "doc_id": f"upload_{self.uploaded_count}",
             "title": filename,
@@ -497,4 +535,6 @@ _sessions: Dict[str, RagSession] = {}
 def get_or_create_session(thread_id: str) -> RagSession:
     if thread_id not in _sessions:
         _sessions[thread_id] = RagSession(thread_id)
+    else:
+        _sessions[thread_id].sync_uploads()
     return _sessions[thread_id]

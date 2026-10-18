@@ -15,3 +15,5 @@ numpy
 pandas
 python-docx
 pypdf
+pymysql
+cryptography

@@ -47,6 +47,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from . import google_search
 from . import guardrails
 from . import llm
+from . import store
 
 # ---------------------------------------------------------------------------
 # Tools
@@ -444,17 +445,19 @@ def get_agent():
 
 
 def run_agent(query: str, thread_id: str = "run-1") -> dict:
-    """FIX for the multi-turn memory gap: reads back the prior checkpoint via
-    get_state() and carries forward chat_history, instead of always building a
-    fresh initial state (which is what the graded submission did despite
-    having MemorySaver wired up)."""
+    """FIX for the multi-turn memory gap: carries forward chat_history from
+    earlier turns instead of always building a fresh initial state (which is
+    what the graded submission did despite having MemorySaver wired up).
+
+    The history is now read from the shared chat database (store.py) rather
+    than the graph's in-memory MemorySaver checkpoint. Once the backend runs
+    as several replicas behind a load balancer, consecutive turns of one chat
+    can land on different pods, and a pod's MemorySaver only knows the turns
+    that pod handled itself."""
     agent = get_agent()
     config = {"configurable": {"thread_id": thread_id}}
 
-    prior = agent.get_state(config)
-    prior_history = []
-    if prior and prior.values:
-        prior_history = prior.values.get("chat_history", [])
+    prior_history = store.get_agent_history(thread_id)
 
     initial = {
         "query": query,
@@ -470,12 +473,10 @@ def run_agent(query: str, thread_id: str = "run-1") -> dict:
     }
     result = agent.invoke(initial, config=config)
 
-    # Append this turn to chat_history so the next invocation on this thread_id
-    # (same user coming back, or a follow-up question) sees it.
-    updated_history = prior_history + [
+    # main.py persists this turn to the chat database, which is what the
+    # next invocation on this thread_id (on any pod) reads back.
+    result["chat_history"] = prior_history + [
         {"role": "user", "content": query},
         {"role": "assistant", "content": result.get("final_response", "")},
     ]
-    agent.update_state(config, {"chat_history": updated_history})
-    result["chat_history"] = updated_history
     return result
