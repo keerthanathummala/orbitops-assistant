@@ -93,7 +93,7 @@ that's out of scope for a free-tier portfolio deployment.
 
 ## Running locally
 
-### 1. Ollama
+### 1. Ollama (only if LLM_PROVIDER=ollama)
 
 ```bash
 curl -fsSL https://ollama.com/install.sh | sh
@@ -112,12 +112,14 @@ pip install -r requirements.txt
 Copy your Assessment 1 `data/docs/*.txt` files into `backend/app/data/docs/` —
 that's the base OrbitOps corpus the RAG pipeline indexes at startup.
 
-Optional — enable Google Search by copying `.env.example` to `.env` and
-filling in a free Google Custom Search API key + Search Engine ID. Leave it
-blank to run with GitHub + HackerNews only.
+Copy `.env.example` to `.env` and set `GEMINI_API_KEY` (free key from
+https://aistudio.google.com/apikey), or set `LLM_PROVIDER=ollama` to use the
+local Ollama model from step 1. Optionally fill in a free Google Custom
+Search API key + Search Engine ID; leave them blank to run with GitHub +
+HackerNews only.
 
 ```bash
-uvicorn app.main:app --reload --port 8000
+uvicorn app.main:app --reload --port 8000 --env-file .env
 ```
 
 If your frontend runs anywhere other than `localhost:5173`/`127.0.0.1:5173`
@@ -139,9 +141,16 @@ npm run dev
 Open the printed `localhost` URL. Set `VITE_API_URL` in a `.env` file in
 `frontend/` if the backend isn't on `localhost:8000`.
 
-## Deploying for free
+## Deploying to the cloud
 
-Not yet decided — options discussed: Oracle Cloud's Always Free ARM VM
-(24GB RAM, enough to run Ollama + the backend + frontend together,
-always-on with a real public URL) or your own PC exposed via a free
-Cloudflare Tunnel (free, but only live while your PC is on).
+The app is containerised (`backend/Dockerfile`, `frontend/Dockerfile`) and
+runs as microservices on Google Kubernetes Engine: React/nginx frontend,
+FastAPI backend, MySQL, Chroma and Redis, with the LLM served by the hosted
+Gemini API. Backend pods are stateless so they scale horizontally and
+support rolling updates and rollback. `docker compose up --build` runs the
+same stack locally. See [DEPLOY.md](DEPLOY.md) for the full steps.
+
+Local (non-Docker) runs still work as described above: without `MYSQL_HOST`,
+`CHROMA_HOST` or `REDIS_URL` the backend falls back to SQLite, an on-disk
+Chroma store and an in-memory rate limiter. Set `LLM_PROVIDER=ollama` to use
+the local Ollama model instead of Gemini.

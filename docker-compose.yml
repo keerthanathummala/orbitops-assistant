@@ -1,0 +1,49 @@
+# Full stack on one machine, for developing and testing before deploying to
+# GKE (the brief recommends testing locally to save cloud credit).
+#   cp backend/.env.example backend/.env   # add GEMINI_API_KEY
+#   docker compose up --build
+#   open http://localhost:8080
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: orbitops
+      MYSQL_USER: orbitops
+      MYSQL_PASSWORD: orbitops
+    volumes:
+      - mysql-data:/var/lib/mysql
+
+  redis:
+    image: redis:7-alpine
+
+  chroma:
+    image: chromadb/chroma:1.5.9
+    volumes:
+      - chroma-data:/data
+
+  backend:
+    build: ./backend
+    env_file: ./backend/.env
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_USER: orbitops
+      MYSQL_PASSWORD: orbitops
+      MYSQL_DATABASE: orbitops
+      REDIS_URL: redis://redis:6379/0
+      CHROMA_HOST: chroma
+      CHROMA_PORT: "8000"
+      APP_VERSION: local
+    depends_on: [mysql, redis, chroma]
+    deploy:
+      replicas: 2
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "8080:80"
+    depends_on: [backend]
+
+volumes:
+  mysql-data:
+  chroma-data:
