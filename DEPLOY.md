@@ -10,7 +10,8 @@ Browser ──> GCP external load balancer (Service type LoadBalancer)
                                        ├─> mysql   StatefulSet + 5Gi disk   chat history, threads, uploads
                                        ├─> chroma  StatefulSet + 2Gi disk   vector store
                                        ├─> redis   Deployment               shared rate limits
-                                       └─> Gemini API (hosted LLM), GitHub / HackerNews / Google APIs
+                                       ├─> Gemini API (hosted LLM), GitHub / HackerNews / Google APIs
+                                       └─> Kubernetes API (read-only, own namespace) for the AIOps features
 ```
 
 The backend pods are stateless: everything a request needs lives in MySQL,
@@ -69,6 +70,7 @@ kubectl apply -f k8s/00-namespace.yaml
 cp k8s/01-secrets.example.yaml k8s/secrets.yaml   # fill in passwords + GEMINI_API_KEY (git-ignored)
 kubectl apply -f k8s/secrets.yaml
 kubectl apply -f k8s/02-configmap.yaml -f k8s/10-mysql.yaml -f k8s/11-chroma.yaml -f k8s/12-redis.yaml
+kubectl apply -f k8s/22-rbac.yaml       # read-only cluster access for the AIOps features
 kubectl apply -f k8s/20-backend.yaml -f k8s/21-frontend.yaml -f k8s/30-hpa.yaml
 
 kubectl -n orbitops get pods -w                 # wait until everything is Running/Ready
@@ -87,6 +89,10 @@ kubectl -n orbitops get svc frontend            # EXTERNAL-IP is the app's publi
 | Rolling update | build `:v2` (`gcloud builds submit backend --tag $REG/backend:v2`), change image tag and `APP_VERSION` to `v2` in `k8s/20-backend.yaml`, `kubectl apply -f k8s/20-backend.yaml`, `kubectl -n orbitops rollout status deploy/backend` | pods replaced one at a time; footer shows `version v2`; no downtime |
 | Rollback | `kubectl -n orbitops rollout history deploy/backend` then `kubectl -n orbitops rollout undo deploy/backend` | footer back to `version v1` |
 | Persistence | `kubectl -n orbitops delete pod mysql-0` | chats survive (persistent disk) |
+| AIOps: healthy | click **Run health check** in the app | "Healthy", all pods ready |
+| AIOps: incident | deploy a broken version: `kubectl -n orbitops set image deploy/backend backend=$REG/backend:does-not-exist`, then click **Run health check** | flags ImagePullBackOff / stuck rollout, explains it, suggests `rollout undo` with the runbook |
+| AIOps: questions | ask "is anything failing?", "why did the backend pod restart?", "explain the backend errors" | answers from live pods, events and logs (OPS badge) |
+| AIOps: recover | `kubectl -n orbitops rollout undo deploy/backend`, then health check again | back to Healthy |
 
 ## 6. Stop paying when you're done
 

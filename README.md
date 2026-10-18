@@ -141,6 +141,25 @@ npm run dev
 Open the printed `localhost` URL. Set `VITE_API_URL` in a `.env` file in
 `frontend/` if the backend isn't on `localhost:8000`.
 
+## AIOps: watching its own deployment
+
+Once deployed to Kubernetes, the assistant can also observe the cluster it
+runs in (`backend/app/cluster_ops.py`, read-only access via
+`k8s/22-rbac.yaml`):
+
+- **Cluster questions** in chat ("is anything failing?", "why did the backend
+  pod restart?") are answered from live pods, deployments, autoscalers and
+  warning events, with the relevant runbooks retrieved by the RAG pipeline.
+- **Log explainer**: questions about errors or logs pull recent pod logs and
+  group the errors into a likely cause.
+- **Run health check** button: rule-based checks (crash loops, OOM kills,
+  image pull failures, unready pods, stuck rollouts, autoscaler at max) plus
+  an LLM-written incident summary with next steps. Rules decide what counts
+  as a problem, so the check can't invent an incident.
+
+Outside a cluster these features report that cluster access isn't
+configured, and cluster-sounding questions fall back to the docs pipeline.
+
 ## Deploying to the cloud
 
 The app is containerised (`backend/Dockerfile`, `frontend/Dockerfile`) and
