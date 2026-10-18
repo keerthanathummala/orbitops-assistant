@@ -45,3 +45,11 @@ export async function fetchHealth() {
   if (!res.ok) return null
   return res.json()
 }
+
+export async function runHealthCheck(threadId) {
+  const form = new FormData()
+  form.append('thread_id', threadId)
+  const res = await fetch(`${API_BASE}/api/ops/health-check`, { method: 'POST', body: form })
+  if (!res.ok) throw new Error((await res.json()).detail || 'Health check failed')
+  return res.json()
+}

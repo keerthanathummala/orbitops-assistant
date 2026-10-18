@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { colors, fonts } from './theme'
-import { sendChat, fetchThreads, fetchThreadMessages, uploadDocument, fetchStatus, fetchHealth } from './api'
+import { sendChat, fetchThreads, fetchThreadMessages, uploadDocument, fetchStatus, fetchHealth, runHealthCheck } from './api'
 import CoverPage from './CoverPage'
 
 const THREAD_IDS_KEY = 'compass_thread_ids'
@@ -17,6 +17,16 @@ function loadThreadIds() {
 
 function saveThreadIds(ids) {
   localStorage.setItem(THREAD_IDS_KEY, JSON.stringify(ids))
+}
+
+// crypto.randomUUID() only exists on HTTPS/localhost, and the GKE load
+// balancer serves plain HTTP, so build a v4 UUID from getRandomValues.
+function newThreadId() {
+  const b = crypto.getRandomValues(new Uint8Array(16))
+  b[6] = (b[6] & 0x0f) | 0x40
+  b[8] = (b[8] & 0x3f) | 0x80
+  const h = [...b].map((x) => x.toString(16).padStart(2, '0')).join('')
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`
 }
 
 export default function App() {
@@ -101,6 +111,30 @@ export default function App() {
       fetchHealth().then(setServed).catch(() => {})
     } catch (e) {
       setError(e.message || 'Something went wrong — is the backend running?')
+    } finally {
+      setSending(false)
+    }
+  }
+
+  // AIOps: scan the live Kubernetes deployment and post the result into the chat.
+  async function handleHealthCheck() {
+    if (sending) return
+    setError('')
+    setSending(true)
+    const threadId = activeThread || newThreadId()
+    setMessages((prev) => [...prev, { role: 'user', content: 'Run a cluster health check', source: null }])
+    try {
+      const res = await runHealthCheck(threadId)
+      if (!activeThread) {
+        const next = [threadId, ...threadIds.filter((t) => t !== threadId)]
+        setThreadIds(next)
+        saveThreadIds(next)
+        persistActiveThread(threadId)
+      }
+      setMessages((prev) => [...prev, { role: 'assistant', content: res.text, source: 'ops', citations: res.citations }])
+      fetchHealth().then(setServed).catch(() => {})
+    } catch (e) {
+      setError(e.message || 'Health check failed')
     } finally {
       setSending(false)
     }
@@ -196,9 +230,16 @@ export default function App() {
         <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '18px 32px', borderBottom: `1px solid ${colors.border}`, background: colors.sidebarBg }}>
           <div>
             <div style={{ fontFamily: fonts.heading, fontWeight: 600, fontSize: 19, color: colors.heading }}>OrbitOps Assistant</div>
-            <div style={{ fontSize: 12.5, color: colors.textMuted, marginTop: 2 }}>Docs · GitHub · HackerNews</div>
+            <div style={{ fontSize: 12.5, color: colors.textMuted, marginTop: 2 }}>Docs · GitHub · HackerNews · Cluster</div>
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button
+              onClick={handleHealthCheck}
+              disabled={sending}
+              style={{ fontSize: 12, fontWeight: 600, color: colors.opsBadgeText, background: colors.opsBadgeBg, border: `1px solid ${colors.opsBadgeBorder}`, borderRadius: 20, padding: '6px 12px', cursor: sending ? 'default' : 'pointer', fontFamily: 'inherit' }}
+            >
+              Run health check
+            </button>
             <div style={{ fontSize: 12, fontWeight: 500, color: colors.docsBadgeText, background: colors.docsBadgeBg, border: `1px solid ${colors.docsBadgeBorder}`, borderRadius: 20, padding: '6px 12px' }}>
               Docs indexed · {status.docs_indexed}
             </div>
@@ -212,7 +253,7 @@ export default function App() {
         <div ref={scrollRef} style={{ flex: '1 1 auto', padding: '32px 10% 20px', display: 'flex', flexDirection: 'column', gap: 22, overflowY: 'auto' }}>
           {messages.length === 0 && (
             <div style={{ color: colors.textFaint, fontSize: 14, textAlign: 'center', marginTop: 40 }}>
-              Ask about OrbitOps docs, or about anything on GitHub &amp; HackerNews.
+              Ask about OrbitOps docs, GitHub &amp; HackerNews, or the live cluster (pods, restarts, logs).
             </div>
           )}
           {messages.map((m, i) =>
@@ -228,11 +269,11 @@ export default function App() {
                   <span
                     style={{
                       fontSize: 11, fontWeight: 600, letterSpacing: '0.03em', borderRadius: 20, padding: '3px 10px',
-                      color: m.source === 'agent' ? colors.agentBadgeText : colors.docsBadgeText,
-                      background: m.source === 'agent' ? colors.agentBadgeBg : colors.docsBadgeBg,
+                      color: m.source === 'agent' ? colors.agentBadgeText : m.source === 'ops' ? colors.opsBadgeText : colors.docsBadgeText,
+                      background: m.source === 'agent' ? colors.agentBadgeBg : m.source === 'ops' ? colors.opsBadgeBg : colors.docsBadgeBg,
                     }}
                   >
-                    {m.source === 'agent' ? 'AGENT' : 'DOCS'}
+                    {m.source === 'agent' ? 'AGENT' : m.source === 'ops' ? 'OPS' : 'DOCS'}
                   </span>
                   {m.citations && m.citations.length > 0 && (
                     <span style={{ fontSize: 11.5, color: colors.textMuted }}>
@@ -264,7 +305,7 @@ export default function App() {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() } }}
-              placeholder="Ask about OrbitOps docs, or search GitHub & HackerNews…"
+              placeholder="Ask about OrbitOps docs, GitHub & HackerNews, or the live cluster…"
               style={{ flex: '1 1 auto', fontSize: 14.5, color: colors.textMain, border: 'none', outline: 'none', fontFamily: fonts.body, background: 'transparent' }}
             />
             <input type="file" ref={fileInputRef} style={{ display: 'none' }} onChange={handleFileChange} accept=".txt,.md,.docx,.pdf" />
