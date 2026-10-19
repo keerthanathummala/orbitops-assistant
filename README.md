@@ -1,4 +1,4 @@
-# OrbitOps Assistant — Compass
+# OrbitOps Assistant
 
 A single live chat app combining two COMP2701 assignments into one portfolio project:
 

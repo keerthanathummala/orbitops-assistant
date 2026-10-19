@@ -9,7 +9,7 @@ document.head.appendChild(style)
 
 // Restore a theme picked with the toggle before the first render, so the page doesn't flash.
 try {
-  const saved = localStorage.getItem('compass_theme')
+  const saved = localStorage.getItem('orbitops_theme')
   if (saved === 'light' || saved === 'dark') document.documentElement.dataset.theme = saved
 } catch {
   // Storage blocked: just follow the system setting.

@@ -1,7 +1,7 @@
 """
 FastAPI app wiring together: dispatcher (RAG + Agent), SQLite chat history,
 document upload (10/session max), and Google quota status — everything the
-frontend (Compass) talks to.
+frontend talks to.
 
 Security/safety measures (see guardrails.py, rate_limit.py for the "why"):
   - Prompt-injection + input-sanity guardrail on every chat message (RAG path

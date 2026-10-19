@@ -1,4 +1,4 @@
-// Palette matches the published Compass design mockup (blue backgrounds, beige accent).
+// Palette matches the original design mockup (blue backgrounds, beige accent).
 // Components read colors as CSS variables so the whole UI can switch between
 // light and dark without re-rendering: `colors.accent` is 'var(--c-accent)'.
 const light = {

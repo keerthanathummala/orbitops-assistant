@@ -4,10 +4,13 @@ import { sendChat, fetchThreads, fetchThreadMessages, uploadDocument, fetchStatu
 import CoverPage from './CoverPage'
 import Markdown from './Markdown'
 
-const THREAD_IDS_KEY = 'compass_thread_ids'
-const ACTIVE_THREAD_KEY = 'compass_active_thread'
+const THREAD_IDS_KEY = 'orbitops_thread_ids'
+const ACTIVE_THREAD_KEY = 'orbitops_active_thread'
+// Keys from when the UI was called Compass, read once so existing chats aren't lost.
+const OLD_THREAD_IDS_KEY = 'compass_thread_ids'
+const OLD_ACTIVE_THREAD_KEY = 'compass_active_thread'
 const MAX_UPLOADS = 10
-const THEME_KEY = 'compass_theme'
+const THEME_KEY = 'orbitops_theme'
 const THEME_LABELS = { system: 'Theme · auto', light: 'Theme · light', dark: 'Theme · dark' }
 const NEXT_THEME = { system: 'light', light: 'dark', dark: 'system' }
 
@@ -22,7 +25,7 @@ function loadTheme() {
 
 function loadThreadIds() {
   try {
-    return JSON.parse(localStorage.getItem(THREAD_IDS_KEY) || '[]')
+    return JSON.parse(localStorage.getItem(THREAD_IDS_KEY) || localStorage.getItem(OLD_THREAD_IDS_KEY) || '[]')
   } catch {
     return []
   }
@@ -46,7 +49,7 @@ export default function App() {
   const [started, setStarted] = useState(false)
   const [threadIds, setThreadIds] = useState(loadThreadIds())
   const [threads, setThreads] = useState([])
-  const [activeThread, setActiveThread] = useState(localStorage.getItem(ACTIVE_THREAD_KEY) || null)
+  const [activeThread, setActiveThread] = useState(localStorage.getItem(ACTIVE_THREAD_KEY) || localStorage.getItem(OLD_ACTIVE_THREAD_KEY) || null)
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
@@ -210,7 +213,7 @@ export default function App() {
       <div style={{ width: 272, flex: '0 0 272px', background: colors.sidebarBg, borderRight: `1px solid ${colors.border}`, display: 'flex', flexDirection: 'column', padding: '24px 18px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '0 6px 22px', borderBottom: `1px solid ${colors.borderSoft}`, marginBottom: 18 }}>
           <div style={{ width: 30, height: 30, borderRadius: 8, background: colors.accent, flexShrink: 0 }} />
-          <div style={{ fontFamily: fonts.heading, fontWeight: 600, fontSize: 21, color: colors.heading, letterSpacing: '-0.01em' }}>Compass</div>
+          <div style={{ fontFamily: fonts.heading, fontWeight: 600, fontSize: 21, color: colors.heading, letterSpacing: '-0.01em' }}>OrbitOps</div>
         </div>
 
         <button
