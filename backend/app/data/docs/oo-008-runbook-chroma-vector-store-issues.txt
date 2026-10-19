@@ -1,0 +1,15 @@
+Doc ID: OO-008
+Title: Runbook: Chroma vector store issues
+Date: 2026-03-18
+Team: Data
+Tags: chroma, vector database, rag, retrieval, runbook
+
+Chroma (StatefulSet chroma, Service chroma on port 8000) stores the embeddings used by the document Q&A pipeline. Every backend pod reads and writes the same Chroma server.
+
+Symptoms of a Chroma problem: document answers fail or say no information was found even for questions the docs clearly cover, and backend logs show connection errors to chroma:8000.
+
+Check: kubectl -n orbitops get pod chroma-0 and kubectl -n orbitops logs chroma-0. The readiness probe calls /api/v2/heartbeat.
+
+Recovery: Chroma data is on a 2Gi persistent volume. If the data is lost or corrupted it can be rebuilt: each backend pod re-indexes the base corpus and the uploads stored in MySQL when it creates a chat session, so restarting the backend (kubectl -n orbitops rollout restart deployment/backend) repopulates the collections. Writes use upsert, so re-indexing does not create duplicates.
+
+Keep the Chroma server version in k8s/11-chroma.yaml in step with the chromadb client version in backend/requirements.txt; a mismatch causes API errors.

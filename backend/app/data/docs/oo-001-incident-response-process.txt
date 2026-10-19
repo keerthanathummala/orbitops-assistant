@@ -1,0 +1,15 @@
+Doc ID: OO-001
+Title: Incident response process
+Date: 2026-03-02
+Team: SRE
+Tags: incident, on-call, severity, process
+
+OrbitOps classifies incidents by user impact. SEV1: the assistant is unavailable for all users or chat history is being lost. SEV2: a major feature is broken (document Q&A, the research agent, uploads) or responses are very slow for most users. SEV3: a minor feature is degraded or a single pod is unhealthy while the service still works.
+
+When an alert fires or a user reports a problem, the on-call engineer acknowledges it within 10 minutes. The first step is always to run the Health check in the OrbitOps Assistant or `kubectl -n orbitops get pods` to see what is failing.
+
+Roles: the incident commander coordinates and decides; one engineer investigates; for SEV1 a second engineer posts updates every 30 minutes in the #orbitops-incidents channel.
+
+Mitigate first, investigate second. If the problem started right after a deploy, roll back immediately (see OO-004) instead of debugging the new version in production.
+
+Every SEV1 and SEV2 incident gets a blameless post-incident review within 3 working days, recorded using the template in OO-012.

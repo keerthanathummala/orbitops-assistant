@@ -1,0 +1,16 @@
+Doc ID: OO-005
+Title: Runbook: ImagePullBackOff
+Date: 2026-03-12
+Team: Platform
+Tags: kubernetes, images, artifact registry, imagepullbackoff, runbook
+
+Symptom: a pod is stuck with status ErrImagePull or ImagePullBackOff and never starts.
+
+Causes, from most to least common:
+1. The image tag does not exist, often a typo or a build that never finished. Check with gcloud artifacts docker images list australia-southeast1-docker.pkg.dev/<project>/orbitops.
+2. The project ID placeholder in k8s/20-backend.yaml or k8s/21-frontend.yaml was not replaced.
+3. The cluster's node service account lacks permission to read Artifact Registry (rare on a default GKE cluster in the same project).
+
+Inspect: kubectl -n orbitops describe pod <pod-name> and read the Events section for the exact error.
+
+Fix: correct the image reference and apply the manifest again, or roll back to the last working revision with kubectl -n orbitops rollout undo deployment/<name> (OO-004). Because maxUnavailable is 0, the old pods keep serving traffic while the new pod fails to pull, so this is normally SEV3 unless every pod was replaced.

@@ -1,0 +1,19 @@
+Doc ID: OO-010
+Title: Onboarding for new engineers
+Date: 2026-01-15
+Team: Platform
+Tags: onboarding, access, setup, new starter
+
+Welcome to the OrbitOps team. In your first week:
+
+Day 1: get access to the Google Cloud project (Viewer, plus Kubernetes Engine Developer for on-call engineers), the GitHub repository, and the #orbitops and #orbitops-incidents channels.
+
+Day 2: run the app locally (README.md), then in Cloud Shell with docker compose. Read OO-009 (deployment process) and OO-001 (incident response).
+
+Day 3: connect to the cluster with gcloud container clusters get-credentials orbitops --zone australia-southeast1-a and explore it read-only: kubectl -n orbitops get pods,svc,deploy,sts,hpa.
+
+Days 4-5: shadow the on-call engineer and practise a rollback in the staging namespace.
+
+Ask questions in #orbitops; the OrbitOps Assistant can also answer questions about these runbooks and about the live cluster.
+
+New engineers join the on-call rotation after their first month, once they have completed one supervised incident drill.

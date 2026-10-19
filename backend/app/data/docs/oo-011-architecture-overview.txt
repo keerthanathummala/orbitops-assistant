@@ -1,0 +1,19 @@
+Doc ID: OO-011
+Title: Architecture overview
+Date: 2026-02-01
+Team: Platform
+Tags: architecture, microservices, kubernetes, overview
+
+OrbitOps Assistant runs on Google Kubernetes Engine in the orbitops namespace.
+
+Frontend: nginx serving the React app, 2-4 pods, exposed through a LoadBalancer Service. nginx forwards /api requests to the backend Service.
+
+Backend: FastAPI, 2-5 pods. It routes each question to the document Q&A pipeline (hybrid BM25 and vector retrieval over these runbooks), the research agent (GitHub and HackerNews APIs) or the AIOps module, which reads the cluster through a read-only service account. Answers are written by the Gemini API.
+
+MySQL: chat threads, messages and uploaded document text (StatefulSet, 5Gi disk).
+Chroma: vector embeddings (StatefulSet, 2Gi disk).
+Redis: shared rate-limit counters (20 chat messages and 10 uploads per minute per chat).
+
+Health endpoints: /api/health (liveness, reports pod name and version) and /api/ready (readiness, checks the database).
+
+Images are built with Cloud Build and stored in Artifact Registry. Configuration lives in the orbitops-config ConfigMap and secrets in orbitops-secrets.

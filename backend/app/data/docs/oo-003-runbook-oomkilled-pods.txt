@@ -1,0 +1,19 @@
+Doc ID: OO-003
+Title: Runbook: OOMKilled pods
+Date: 2026-03-11
+Team: SRE
+Tags: kubernetes, memory, oomkilled, resources, runbook
+
+Symptom: a container restarted with Last State reason OOMKilled and exit code 137. The kernel killed it because it used more memory than its limit.
+
+The backend loads the sentence-transformers embedding model and keeps a retrieval index per active chat, so memory grows with the number of active chats and the size of uploaded documents. Its limit is 2Gi with a request of 1Gi (k8s/20-backend.yaml).
+
+Investigate:
+kubectl top pod -n orbitops  (current memory per pod)
+Check whether the restarts line up with large document uploads or a traffic spike.
+
+Short-term fix: scale out so each pod handles fewer chats: kubectl -n orbitops scale deployment/backend --replicas=4. The HPA will scale on CPU but not on memory.
+
+Longer-term fix: raise resources.limits.memory in k8s/20-backend.yaml (for example to 3Gi), apply it, and watch the rolling update. If nodes run out of allocatable memory, new pods stay Pending; the cluster autoscaler then adds a node (up to 4 e2-standard-2 nodes).
+
+MySQL and Chroma are StatefulSets with a 1Gi memory limit; an OOMKilled MySQL pod is a SEV1 because chat history becomes unavailable.

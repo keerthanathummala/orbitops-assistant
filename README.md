@@ -109,8 +109,8 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Copy your Assessment 1 `data/docs/*.txt` files into `backend/app/data/docs/` —
-that's the base OrbitOps corpus the RAG pipeline indexes at startup.
+The base corpus (12 OrbitOps runbooks and process docs, OO-001 to OO-012) is
+already in `backend/app/data/docs/`; the RAG pipeline indexes it at startup.
 
 Copy `.env.example` to `.env` and set `GEMINI_API_KEY` (free key from
 https://aistudio.google.com/apikey), or set `LLM_PROVIDER=ollama` to use the

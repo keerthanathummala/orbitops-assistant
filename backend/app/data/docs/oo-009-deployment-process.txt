@@ -1,0 +1,15 @@
+Doc ID: OO-009
+Title: Deployment process
+Date: 2026-02-20
+Team: Platform
+Tags: deploy, release, cloud build, artifact registry, kubernetes
+
+Every OrbitOps release follows the same steps.
+
+1. Test locally with docker compose up --build (or in Cloud Shell) before using cloud credit.
+2. Build versioned images with Cloud Build: gcloud builds submit backend --tag <registry>/backend:vN and the same for the frontend. Always use a new tag; never reuse one.
+3. Update the image tag and APP_VERSION in k8s/20-backend.yaml (and k8s/21-frontend.yaml if changed), then kubectl apply -f the file.
+4. Watch the rollout: kubectl -n orbitops rollout status deployment/backend. Kubernetes starts one new pod at a time (maxSurge 1, maxUnavailable 0) and only removes an old pod after the new one passes its readiness probe, so there is no downtime.
+5. Verify: the web app footer shows the new version, the Health check is Healthy, and a docs question and a GitHub question both answer.
+
+If anything fails, roll back with kubectl -n orbitops rollout undo (OO-004). Deploys are avoided on Friday afternoons and during demos.

@@ -1,0 +1,20 @@
+Doc ID: OO-007
+Title: Runbook: MySQL unavailable
+Date: 2026-03-18
+Team: Data
+Tags: mysql, database, statefulset, chat history, runbook
+
+MySQL (StatefulSet mysql, pod mysql-0) stores threads, chat messages and the extracted text of uploaded documents. When it is down, the backend readiness probe /api/ready fails, so Kubernetes stops routing traffic to backend pods and the app returns errors: this is a SEV1.
+
+Check:
+kubectl -n orbitops get pod mysql-0
+kubectl -n orbitops logs mysql-0
+kubectl -n orbitops describe pod mysql-0
+
+Common causes:
+- The pod was rescheduled and is waiting for its persistent disk to attach to the new node; this usually resolves within a few minutes.
+- Wrong credentials after editing orbitops-secrets: the backend logs show access denied. The MYSQL_PASSWORD in the Secret must match the password the database was first created with.
+- Disk full: the volume is 5Gi. Check with kubectl -n orbitops exec mysql-0 -- df -h /var/lib/mysql and expand the PersistentVolumeClaim if needed.
+- OOMKilled: see OO-003.
+
+Data survives pod restarts because it lives on the PersistentVolume. Never delete the PVC data-mysql-0 during an incident; that permanently deletes all chat history.

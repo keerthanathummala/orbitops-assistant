@@ -20,8 +20,8 @@ removed or replaced (rolling update) without losing chats or uploads.
 
 ## 0. Before you start
 
-- Put your Assessment 1 OrbitOps `.txt` files in `backend/app/data/docs/`
-  (they're baked into the backend image as the base corpus).
+- The runbook corpus in `backend/app/data/docs/` is baked into the backend
+  image as the base corpus; add or edit `.txt` files there before building.
 - Get a free Gemini API key at https://aistudio.google.com/apikey.
 - Install the Google Cloud CLI and `kubectl`
   (`gcloud components install kubectl gke-gcloud-auth-plugin`).

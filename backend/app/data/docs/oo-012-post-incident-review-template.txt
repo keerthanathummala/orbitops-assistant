@@ -1,0 +1,18 @@
+Doc ID: OO-012
+Title: Post-incident review template
+Date: 2026-03-05
+Team: SRE
+Tags: incident, postmortem, review, template
+
+Use this template for every SEV1 and SEV2 incident. Reviews are blameless: focus on systems and processes, not individuals.
+
+Summary: one paragraph on what happened and the user impact.
+Timeline: detection time, key actions, mitigation time and resolution time, all in AEST.
+Detection: how was it noticed (Health check, user report, alert)? How could it be detected sooner?
+Root cause: the underlying cause, not just the trigger. Ask why five times.
+What went well, and what went badly.
+Action items: each with an owner and a due date, for example add a readiness check, raise a resource limit, add a runbook.
+
+Metrics to record: time to detect, time to mitigate, number of users affected, and whether a rollback was used.
+
+Store completed reviews alongside these runbooks so the OrbitOps Assistant can retrieve them in future incidents.

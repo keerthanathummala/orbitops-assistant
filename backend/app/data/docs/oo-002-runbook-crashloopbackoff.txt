@@ -1,0 +1,19 @@
+Doc ID: OO-002
+Title: Runbook: CrashLoopBackOff
+Date: 2026-03-10
+Team: SRE
+Tags: kubernetes, crashloopbackoff, pods, runbook
+
+Symptom: a pod shows status CrashLoopBackOff and its restart count keeps rising. Kubernetes starts the container, it exits, and Kubernetes waits longer and longer before trying again.
+
+Step 1: find the reason the container exited.
+kubectl -n orbitops describe pod <pod-name>  (look at Last State: Terminated, Reason and Exit Code)
+kubectl -n orbitops logs <pod-name> --previous  (logs from the crashed run)
+
+Common causes for the backend:
+- Missing configuration: a KeyError or "is not set" message for GEMINI_API_KEY or MYSQL_PASSWORD means the orbitops-secrets Secret is missing a key. Fix the Secret, apply it, then run kubectl -n orbitops rollout restart deployment/backend.
+- Database not reachable at startup: the backend retries for about a minute; if MySQL is down, fix MySQL first (OO-007).
+- Out of memory: exit code 137 with reason OOMKilled, see OO-003.
+- A bad release: if the crash started right after a deploy, roll back (OO-004).
+
+Step 2: confirm recovery with kubectl -n orbitops get pods -w until the pod is Running and READY 1/1, then run the Health check again.

@@ -1,0 +1,19 @@
+Doc ID: OO-004
+Title: Runbook: rolling back a failed deploy
+Date: 2026-03-12
+Team: Platform
+Tags: deploy, rollback, rollout, kubernetes, release
+
+Use a rollback when a new release breaks something: pods crash, the readiness probe fails, errors rise, or the Health check reports a stuck rollout (ProgressDeadlineExceeded).
+
+Because the backend Deployment uses RollingUpdate with maxUnavailable 0, a broken release usually leaves the old pods serving traffic, so users may not notice yet. Roll back anyway rather than waiting.
+
+Commands:
+kubectl -n orbitops rollout history deployment/backend  (list revisions)
+kubectl -n orbitops rollout undo deployment/backend  (back to the previous revision)
+kubectl -n orbitops rollout undo deployment/backend --to-revision=<n>  (a specific revision)
+kubectl -n orbitops rollout status deployment/backend  (wait until complete)
+
+The same commands work for deployment/frontend. Five old revisions are kept (revisionHistoryLimit: 5).
+
+After rolling back, confirm the footer of the web app shows the previous version (for example version v1) and run the Health check. Then record what went wrong in the incident review and fix the release in a new image tag. Never overwrite an existing image tag; always build a new one (v3, v4) so rollbacks stay reliable.

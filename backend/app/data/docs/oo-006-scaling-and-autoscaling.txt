@@ -1,0 +1,17 @@
+Doc ID: OO-006
+Title: Scaling and autoscaling
+Date: 2026-03-15
+Team: Platform
+Tags: scaling, hpa, autoscaling, capacity, kubernetes
+
+OrbitOps scales at two levels.
+
+Pods: Horizontal Pod Autoscalers (k8s/30-hpa.yaml) keep the backend between 2 and 5 replicas, adding pods when average CPU passes 60 percent, and the frontend between 2 and 4 replicas at 70 percent. The backend can scale freely because it is stateless: chats, uploads and vectors live in MySQL and Chroma, and rate-limit counters in Redis.
+
+Nodes: the GKE cluster autoscaler keeps between 2 and 4 e2-standard-2 nodes. When pods are Pending because no node has room, it adds a node within a few minutes.
+
+If the Health check reports that the autoscaler is at its maximum, load exceeds the configured capacity. Options: raise maxReplicas in k8s/30-hpa.yaml, raise the node maximum, or check whether one expensive request type (long uploaded documents, research-agent questions) is driving CPU.
+
+Manual scaling for tests or demos: kubectl -n orbitops scale deployment/backend --replicas=4. Note the HPA will move it back within its min/max range.
+
+Data services (MySQL, Chroma, Redis) run as single replicas and are not autoscaled.
