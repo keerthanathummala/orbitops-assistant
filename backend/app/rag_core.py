@@ -549,3 +549,13 @@ def get_or_create_session(thread_id: str) -> RagSession:
     else:
         _sessions[thread_id].sync_uploads()
     return _sessions[thread_id]
+
+
+def drop_session(thread_id: str) -> None:
+    """Forget a deleted thread's index on this pod and remove its shared
+    Chroma collection. Other pods drop theirs when they restart."""
+    session = _sessions.pop(thread_id, None)
+    try:
+        reset_collection(session.collection_name if session else f"session_{thread_id}")
+    except Exception:
+        pass

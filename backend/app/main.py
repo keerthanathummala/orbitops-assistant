@@ -1,12 +1,14 @@
 """
-FastAPI app wiring together: dispatcher (RAG + Agent), SQLite chat history,
-document upload (10/session max), and Google quota status — everything the
-frontend talks to.
+FastAPI app wiring together: accounts (auth.py), dispatcher (RAG + Agent),
+chat history, document upload (10/session max), the admin page and the
+AIOps health check — everything the frontend talks to.
 
 Security/safety measures (see guardrails.py, rate_limit.py for the "why"):
   - Prompt-injection + input-sanity guardrail on every chat message (RAG path
     included — it previously had none).
   - Faithfulness/anti-hallucination check on both pipelines' answers.
+  - Sign-in required for everything except the health probes; each thread
+    is only readable by the account that created it.
   - thread_id format validation (must be a real UUID, not an arbitrary
     client-supplied string reaching Chroma/SQLite).
   - Per-thread rate limiting on chat and upload.
@@ -23,10 +25,11 @@ import json
 import os
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from . import auth
 from . import store
 from . import dispatcher
 from . import rag_core
@@ -48,8 +51,8 @@ ALLOWED_ORIGINS = [o.strip() for o in _origins_env.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type"],
+    allow_methods=["GET", "POST", "DELETE"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 APP_VERSION = os.environ.get("APP_VERSION", "dev")
@@ -58,16 +61,108 @@ MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5MB — generous for text/docx/pdf notes, 
 CHAT_RATE_LIMIT = (20, 60)      # 20 messages / 60s per thread
 UPLOAD_RATE_LIMIT = (10, 60)    # 10 uploads / 60s per thread
 HEALTH_CHECK_RATE_LIMIT = (6, 60)  # each check reads the cluster + calls the LLM
+AUTH_RATE_LIMIT = (10, 60)      # sign-in/sign-up attempts per IP, slows password guessing
 
 
 @app.on_event("startup")
 def startup():
     store.init_db()
+    auth.ensure_admin_from_env()
 
 
 def _require_valid_thread_id(thread_id: str) -> None:
     if not guardrails.is_valid_thread_id(thread_id):
         raise HTTPException(400, "Invalid thread_id.")
+
+
+def _require_own_thread(thread_id: str, user: dict) -> None:
+    """A thread id that exists must belong to this user. 404 rather than 403
+    so other people's thread ids can't be confirmed by probing."""
+    _require_valid_thread_id(thread_id)
+    exists, owner = store.thread_owner(thread_id)
+    if exists and owner != user["id"]:
+        raise HTTPException(404, "Chat not found.")
+
+
+# ---------------------------------------------------------------------------
+# Accounts
+# ---------------------------------------------------------------------------
+
+class Credentials(BaseModel):
+    username: str = Field(..., max_length=64)
+    password: str = Field(..., max_length=auth.MAX_PASSWORD_LENGTH + 1)
+
+
+def _auth_rate_limit(request: Request) -> None:
+    if not check_rate_limit(f"auth:{auth.client_ip(request)}", *AUTH_RATE_LIMIT):
+        raise HTTPException(429, "Too many attempts. Wait a minute and try again.")
+
+
+@app.post("/api/auth/signup")
+def signup(creds: Credentials, request: Request):
+    _auth_rate_limit(request)
+    username = creds.username.strip()
+    auth.validate_credentials(username, creds.password)
+    if store.get_user_by_username(username) is not None:
+        raise HTTPException(409, "That username is taken.")
+    try:
+        user_id = store.create_user(username, auth.hash_password(creds.password))
+    except Exception:
+        raise HTTPException(409, "That username is taken.")
+    user = {"id": user_id, "username": username, "is_admin": 0}
+    return auth.start_session(user, request, "signup")
+
+
+@app.post("/api/auth/login")
+def login(creds: Credentials, request: Request):
+    _auth_rate_limit(request)
+    user = auth.authenticate(creds.username.strip(), creds.password)
+    if user is None:
+        raise HTTPException(401, "Wrong username or password.")
+    return auth.start_session(user, request, "login")
+
+
+@app.post("/api/auth/logout")
+def logout(request: Request, authorization: Optional[str] = Header(None),
+           user: dict = Depends(auth.current_user)):
+    auth.end_session(authorization)
+    store.log_access(user["id"], user["username"], "logout", auth.client_ip(request),
+                     request.headers.get("user-agent", ""))
+    return {"ok": True}
+
+
+@app.get("/api/auth/me")
+def me(user: dict = Depends(auth.current_user)):
+    return auth.public_user(user)
+
+
+# ---------------------------------------------------------------------------
+# Admin: who used the app, when and from where. Deliberately no access to
+# anyone's chats or uploaded documents.
+# ---------------------------------------------------------------------------
+
+@app.get("/api/admin/users")
+def admin_users(admin: dict = Depends(auth.admin_user)):
+    return store.list_users()
+
+
+@app.get("/api/admin/activity")
+def admin_activity(limit: int = 200, admin: dict = Depends(auth.admin_user)):
+    return store.list_access_log(max(1, min(limit, 1000)))
+
+
+@app.delete("/api/admin/users/{user_id}")
+def admin_delete_user(user_id: int, admin: dict = Depends(auth.admin_user)):
+    if user_id == admin["id"]:
+        raise HTTPException(400, "You can't delete your own admin account.")
+    users = {u["id"]: u for u in store.list_users()}
+    if user_id not in users:
+        raise HTTPException(404, "User not found.")
+    if users[user_id]["is_admin"]:
+        raise HTTPException(400, "Admin accounts are managed through ADMIN_USERNAME.")
+    for thread_id in store.delete_user(user_id):
+        rag_core.drop_session(thread_id)
+    return {"deleted": users[user_id]["username"]}
 
 
 # ---------------------------------------------------------------------------
@@ -108,20 +203,18 @@ class ChatResponse(BaseModel):
 
 
 @app.post("/api/chat", response_model=ChatResponse)
-def chat(req: ChatRequest):
+def chat(req: ChatRequest, user: dict = Depends(auth.current_user)):
     if not req.message or not req.message.strip():
         raise HTTPException(400, "message must not be empty")
 
-    # thread_id is client-supplied with no login behind it -- only trust it
-    # if it's actually a UUID this app would have generated.
     if req.thread_id is not None:
-        _require_valid_thread_id(req.thread_id)
+        _require_own_thread(req.thread_id, user)
     thread_id = req.thread_id or store.new_thread_id()
 
     if not check_rate_limit(f"chat:{thread_id}", *CHAT_RATE_LIMIT):
         raise HTTPException(429, "Too many messages — slow down and try again shortly.")
 
-    store.ensure_thread(thread_id, title_hint=req.message)
+    store.ensure_thread(thread_id, title_hint=req.message, user_id=user["id"])
     store.add_message(thread_id, "user", req.message)
     result = dispatcher.handle_message(thread_id, req.message)
 
@@ -137,18 +230,17 @@ def chat(req: ChatRequest):
 
 
 # ---------------------------------------------------------------------------
-# Returning to previous chats (no login — frontend tracks its own thread_ids)
+# Returning to previous chats (the signed-in user's own)
 # ---------------------------------------------------------------------------
 
 @app.get("/api/threads")
-def list_threads(ids: str = ""):
-    thread_ids = [t for t in ids.split(",") if t and guardrails.is_valid_thread_id(t)]
-    return store.list_threads(thread_ids)
+def list_threads(user: dict = Depends(auth.current_user)):
+    return store.list_threads(user["id"])
 
 
 @app.get("/api/threads/{thread_id}/messages")
-def thread_messages(thread_id: str):
-    _require_valid_thread_id(thread_id)
+def thread_messages(thread_id: str, user: dict = Depends(auth.current_user)):
+    _require_own_thread(thread_id, user)
     return store.get_messages(thread_id)
 
 
@@ -157,8 +249,10 @@ def thread_messages(thread_id: str):
 # ---------------------------------------------------------------------------
 
 @app.post("/api/upload")
-async def upload_document(thread_id: str = Form(...), file: UploadFile = File(...)):
-    _require_valid_thread_id(thread_id)
+async def upload_document(thread_id: str = Form(...), file: UploadFile = File(...),
+                          user: dict = Depends(auth.current_user)):
+    _require_own_thread(thread_id, user)
+    store.ensure_thread(thread_id, title_hint=file.filename or "New chat", user_id=user["id"])
 
     if not check_rate_limit(f"upload:{thread_id}", *UPLOAD_RATE_LIMIT):
         raise HTTPException(429, "Too many uploads — slow down and try again shortly.")
@@ -193,8 +287,8 @@ async def upload_document(thread_id: str = Form(...), file: UploadFile = File(..
 # ---------------------------------------------------------------------------
 
 @app.get("/api/status")
-def status(thread_id: str):
-    _require_valid_thread_id(thread_id)
+def status(thread_id: str, user: dict = Depends(auth.current_user)):
+    _require_own_thread(thread_id, user)
     docs_indexed = dispatcher.docs_indexed_count(thread_id)
     return {"docs_indexed": docs_indexed, "google_search": google_search.quota_status()}
 
@@ -204,11 +298,11 @@ def status(thread_id: str):
 # ---------------------------------------------------------------------------
 
 @app.post("/api/ops/health-check")
-def ops_health_check(thread_id: str = Form(...)):
+def ops_health_check(thread_id: str = Form(...), user: dict = Depends(auth.current_user)):
     """Scans the app's Kubernetes namespace, flags problems with rule-based
     checks and has the LLM write an incident summary. The result is also
     saved into the chat so it stays in the conversation history."""
-    _require_valid_thread_id(thread_id)
+    _require_own_thread(thread_id, user)
     if not check_rate_limit(f"health:{thread_id}", *HEALTH_CHECK_RATE_LIMIT):
         raise HTTPException(429, "Too many health checks — try again shortly.")
 
@@ -225,7 +319,7 @@ def ops_health_check(thread_id: str = Form(...)):
     lines.append(result["summary"])
     text = "\n".join(lines)
 
-    store.ensure_thread(thread_id, title_hint="Cluster health check")
+    store.ensure_thread(thread_id, title_hint="Cluster health check", user_id=user["id"])
     store.add_message(thread_id, "user", "Run a cluster health check")
     store.add_message(thread_id, "assistant", text, source="ops",
                       citations=json.dumps(result["citations"]) if result["citations"] else None)

@@ -67,7 +67,7 @@ gcloud container clusters get-credentials orbitops --zone $REGION-a
 sed -i "s/PROJECT_ID/$PROJECT_ID/g" k8s/20-backend.yaml k8s/21-frontend.yaml   # macOS: sed -i ''
 
 kubectl apply -f k8s/00-namespace.yaml
-cp k8s/01-secrets.example.yaml k8s/secrets.yaml   # fill in passwords + GEMINI_API_KEY (git-ignored)
+cp k8s/01-secrets.example.yaml k8s/secrets.yaml   # fill in passwords, GEMINI_API_KEY and ADMIN_PASSWORD (git-ignored)
 kubectl apply -f k8s/secrets.yaml
 kubectl apply -f k8s/02-configmap.yaml -f k8s/10-mysql.yaml -f k8s/11-chroma.yaml -f k8s/12-redis.yaml
 kubectl apply -f k8s/22-rbac.yaml       # read-only cluster access for the AIOps features
@@ -89,6 +89,7 @@ kubectl -n orbitops get svc frontend            # EXTERNAL-IP is the app's publi
 | Rolling update | build `:v2` (`gcloud builds submit backend --tag $REG/backend:v2`), change image tag and `APP_VERSION` to `v2` in `k8s/20-backend.yaml`, `kubectl apply -f k8s/20-backend.yaml`, `kubectl -n orbitops rollout status deploy/backend` | pods replaced one at a time; footer shows `version v2`; no downtime |
 | Rollback | `kubectl -n orbitops rollout history deploy/backend` then `kubectl -n orbitops rollout undo deploy/backend` | footer back to `version v1` |
 | Persistence | `kubectl -n orbitops delete pod mysql-0` | chats survive (persistent disk) |
+| Accounts | create an account, chat, sign out, sign in as the admin and click **Admin** | sign-in times and IP addresses listed; the admin can't open the chat |
 | AIOps: healthy | click **Run health check** in the app | "Healthy", all pods ready |
 | AIOps: incident | deploy a broken version: `kubectl -n orbitops set image deploy/backend backend=$REG/backend:does-not-exist`, then click **Run health check** | flags ImagePullBackOff / stuck rollout, explains it, suggests `rollout undo` with the runbook |
 | AIOps: questions | ask "is anything failing?", "why did the backend pod restart?", "explain the backend errors" | answers from live pods, events and logs (OPS badge) |

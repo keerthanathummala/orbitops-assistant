@@ -17,11 +17,12 @@ export default function CoverPage({ onContinue }) {
 
       <div style={{ fontSize: 15.5, color: colors.textSecondary, maxWidth: 480, lineHeight: 1.6, marginTop: 18 }}>
         It's a real, working app — not a mockup — with safety measures in place
-        (input filtering, rate limiting, no login). Even so,{' '}
+        (input filtering, rate limiting, private accounts). Even so,{' '}
         <strong style={{ color: colors.textMain }}>
           please do not enter any personal, sensitive, or confidential information.
         </strong>{' '}
-        Chats are stored without a login, so anyone with the right link could read them.
+        You'll need an account. Your chats are visible only to you. The admin can
+        see usernames, when each account signed in and from which IP address, but not chats.
       </div>
 
       <button

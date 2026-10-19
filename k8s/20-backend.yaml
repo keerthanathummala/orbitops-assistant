@@ -52,6 +52,10 @@ spec:
               valueFrom: { secretKeyRef: { name: orbitops-secrets, key: GOOGLE_API_KEY } }
             - name: GOOGLE_CSE_ID
               valueFrom: { secretKeyRef: { name: orbitops-secrets, key: GOOGLE_CSE_ID } }
+            - name: ADMIN_USERNAME
+              valueFrom: { secretKeyRef: { name: orbitops-secrets, key: ADMIN_USERNAME, optional: true } }
+            - name: ADMIN_PASSWORD
+              valueFrom: { secretKeyRef: { name: orbitops-secrets, key: ADMIN_PASSWORD, optional: true } }
           resources:
             # The embedding model + torch need ~1GB.
             requests: { cpu: 250m, memory: 1Gi }

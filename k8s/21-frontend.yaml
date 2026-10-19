@@ -7,6 +7,9 @@ metadata:
   namespace: orbitops
 spec:
   type: LoadBalancer
+  # Keep the visitor's real IP (instead of a node's) so the admin page shows
+  # where each sign-in came from.
+  externalTrafficPolicy: Local
   selector:
     app: frontend
   ports:

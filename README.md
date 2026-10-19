@@ -60,10 +60,20 @@ internet," not just "my own dev machine":
   retrieved/sourced material. If the overlap is too low, a visible notice is
   appended rather than presenting the answer as fully verified. This is a
   heuristic, not a guarantee — it catches obvious drift, not subtle errors.
-- **`thread_id` validation.** The frontend's `thread_id` has no login behind
-  it and goes straight into a Chroma collection name and SQLite rows. Every
-  endpoint now requires it to actually be a UUID this app would have
-  generated, not an arbitrary client-supplied string.
+- **Accounts** (`auth.py`). Users sign up with a username and password
+  (stored as a salted scrypt hash). Sessions are random bearer tokens of
+  which only the sha256 is stored, valid for 7 days, shared by every
+  replica through the database. Every endpoint except the health probes
+  needs a session, and a chat can only be read or continued by the account
+  that created it. Sign-in attempts are rate-limited per IP.
+- **Admin page.** The account named by `ADMIN_USERNAME` / `ADMIN_PASSWORD`
+  sees every account (joined, last active, last IP, number of sign-ins) and
+  the sign-in history (time, IP address, browser), and can delete accounts
+  (their chats go with them; the history keeps the username). There is no
+  endpoint that lets the admin read anyone's chats or documents.
+- **`thread_id` validation.** Every endpoint requires the `thread_id` to be
+  a UUID this app would have generated, not an arbitrary client-supplied
+  string reaching a Chroma collection name or SQL rows.
 - **Rate limiting.** 20 chat messages / 60s and 10 uploads / 60s per thread
   (`rate_limit.py`, in-memory). This exists because the backend runs one
   shared Ollama worker and a global Google quota — without this, one user (or
@@ -73,11 +83,11 @@ internet," not just "my own dev machine":
 - **CORS restricted** to configured origins (`FRONTEND_ORIGINS` env var,
   defaults to localhost) instead of `*`.
 
-What this does *not* cover: this is still no-login, so anyone who learns a
-`thread_id` can read/continue that chat — an accepted trade-off discussed
-earlier, not a bug. It also doesn't defend against a determined attacker
-with many IPs (the rate limiter is per-thread, in-memory, single-process);
-that's out of scope for a free-tier portfolio deployment.
+What this does *not* cover: there is no email verification or password
+reset (the admin can delete an account so the person can sign up again),
+and the IP shown to the admin is the address the request came from, not a
+verified location. It also doesn't defend against a determined attacker
+with many IPs; that's out of scope for a student deployment.
 
 ## Architecture decisions made for this project
 
@@ -86,10 +96,10 @@ that's out of scope for a free-tier portfolio deployment.
 - Google Search quota (100/day, free tier) is **global**, not per-user — it's
   tied to one API key. When exhausted, only the Google tool is disabled for
   the rest of the day; RAG + GitHub/HackerNews keep working.
-- No login: each browser gets a random `thread_id` stored in `localStorage`,
-  used to return to previous chats. Chat history is persisted server-side in
-  SQLite (not just the in-memory LangGraph checkpointer) so it survives a
-  backend restart.
+- Each chat belongs to the signed-in account and is listed from the server,
+  so it follows the user to any browser. Chat history is persisted in MySQL
+  (SQLite locally), not just the in-memory LangGraph checkpointer, so it
+  survives restarts.
 
 ## Running locally
 
@@ -114,7 +124,9 @@ already in `backend/app/data/docs/`; the RAG pipeline indexes it at startup.
 
 Copy `.env.example` to `.env` and set `GEMINI_API_KEY` (free key from
 https://aistudio.google.com/apikey), or set `LLM_PROVIDER=ollama` to use the
-local Ollama model from step 1. Optionally fill in a free Google Custom
+local Ollama model from step 1. Set `ADMIN_PASSWORD` (8+ characters) to get
+an admin account named `ADMIN_USERNAME`; sign in with it and click **Admin**
+under your name in the sidebar. Optionally fill in a free Google Custom
 Search API key + Search Engine ID; leave them blank to run with GitHub +
 HackerNews only.
 

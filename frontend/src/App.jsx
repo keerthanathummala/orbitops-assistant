@@ -1,14 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { colors, fonts } from './theme'
-import { sendChat, fetchThreads, fetchThreadMessages, uploadDocument, fetchStatus, fetchHealth, runHealthCheck } from './api'
+import { sendChat, fetchThreads, fetchThreadMessages, uploadDocument, fetchStatus, fetchHealth, runHealthCheck, fetchMe, signOut, getToken } from './api'
 import CoverPage from './CoverPage'
+import AuthPage from './AuthPage'
+import AdminPage from './AdminPage'
 import Markdown from './Markdown'
 
-const THREAD_IDS_KEY = 'orbitops_thread_ids'
 const ACTIVE_THREAD_KEY = 'orbitops_active_thread'
-// Keys from when the UI was called Compass, read once so existing chats aren't lost.
-const OLD_THREAD_IDS_KEY = 'compass_thread_ids'
-const OLD_ACTIVE_THREAD_KEY = 'compass_active_thread'
 const MAX_UPLOADS = 10
 const THEME_KEY = 'orbitops_theme'
 const THEME_LABELS = { system: 'Theme · auto', light: 'Theme · light', dark: 'Theme · dark' }
@@ -23,18 +21,6 @@ function loadTheme() {
   }
 }
 
-function loadThreadIds() {
-  try {
-    return JSON.parse(localStorage.getItem(THREAD_IDS_KEY) || localStorage.getItem(OLD_THREAD_IDS_KEY) || '[]')
-  } catch {
-    return []
-  }
-}
-
-function saveThreadIds(ids) {
-  localStorage.setItem(THREAD_IDS_KEY, JSON.stringify(ids))
-}
-
 // crypto.randomUUID() only exists on HTTPS/localhost, and the GKE load
 // balancer serves plain HTTP, so build a v4 UUID from getRandomValues.
 function newThreadId() {
@@ -47,9 +33,12 @@ function newThreadId() {
 
 export default function App() {
   const [started, setStarted] = useState(false)
-  const [threadIds, setThreadIds] = useState(loadThreadIds())
+  // Signed-in account; authChecked is false until a saved session has been verified.
+  const [user, setUser] = useState(null)
+  const [authChecked, setAuthChecked] = useState(!getToken())
+  const [view, setView] = useState('chat')
   const [threads, setThreads] = useState([])
-  const [activeThread, setActiveThread] = useState(localStorage.getItem(ACTIVE_THREAD_KEY) || localStorage.getItem(OLD_ACTIVE_THREAD_KEY) || null)
+  const [activeThread, setActiveThread] = useState(localStorage.getItem(ACTIVE_THREAD_KEY) || null)
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
@@ -64,13 +53,35 @@ export default function App() {
   const fileInputRef = useRef(null)
   const scrollRef = useRef(null)
 
-  // Load the sidebar's thread list (only the ids this browser already knows — no login, no global listing).
+  // Resume a saved session, and drop back to sign-in whenever the API says
+  // the session is gone (expired, signed out elsewhere, or account deleted).
   useEffect(() => {
-    fetchThreads(threadIds).then(setThreads).catch(() => {})
-  }, [threadIds])
+    if (getToken()) {
+      fetchMe().then(setUser).catch(() => {}).finally(() => setAuthChecked(true))
+    }
+    const onSignedOut = () => {
+      setUser(null)
+      setView('chat')
+      setThreads([])
+      setActiveThread(null)
+      localStorage.removeItem(ACTIVE_THREAD_KEY)
+    }
+    window.addEventListener('orbitops-signed-out', onSignedOut)
+    return () => window.removeEventListener('orbitops-signed-out', onSignedOut)
+  }, [])
+
+  // The sidebar lists this account's own chats from the server.
+  function refreshThreads() {
+    fetchThreads().then(setThreads).catch(() => {})
+  }
+
+  useEffect(() => {
+    if (user) refreshThreads()
+  }, [user])
 
   // Load messages + status whenever the active thread changes.
   useEffect(() => {
+    if (!user) return
     if (!activeThread) {
       setMessages([])
       setStatus({ docs_indexed: 0, google_search: null })
@@ -79,7 +90,7 @@ export default function App() {
     }
     fetchThreadMessages(activeThread).then(setMessages).catch(() => {})
     fetchStatus(activeThread).then((s) => s && setStatus(s)).catch(() => {})
-  }, [activeThread])
+  }, [activeThread, user])
 
   useEffect(() => {
     fetchHealth().then(setServed).catch(() => {})
@@ -126,12 +137,8 @@ export default function App() {
 
     try {
       const res = await sendChat(activeThread, text)
-      if (!activeThread) {
-        const next = [res.thread_id, ...threadIds.filter((t) => t !== res.thread_id)]
-        setThreadIds(next)
-        saveThreadIds(next)
-        persistActiveThread(res.thread_id)
-      }
+      if (!activeThread) persistActiveThread(res.thread_id)
+      refreshThreads()
       setMessages((prev) => [
         ...prev,
         ...res.segments.map((seg) => ({ role: 'assistant', content: seg.text, source: seg.source, citations: seg.citations })),
@@ -154,12 +161,8 @@ export default function App() {
     setMessages((prev) => [...prev, { role: 'user', content: 'Run a cluster health check', source: null }])
     try {
       const res = await runHealthCheck(threadId)
-      if (!activeThread) {
-        const next = [threadId, ...threadIds.filter((t) => t !== threadId)]
-        setThreadIds(next)
-        saveThreadIds(next)
-        persistActiveThread(threadId)
-      }
+      if (!activeThread) persistActiveThread(threadId)
+      refreshThreads()
       setMessages((prev) => [...prev, { role: 'assistant', content: res.text, source: 'ops', citations: res.citations }])
       fetchHealth().then(setServed).catch(() => {})
     } catch (e) {
@@ -203,8 +206,20 @@ export default function App() {
         ? `Gemini · ${llmInfo.model}`
         : 'Gemini · API key missing'
 
+  async function handleSignOut() {
+    await signOut().catch(() => {})
+    window.dispatchEvent(new Event('orbitops-signed-out'))
+  }
+
   if (!started) {
     return <CoverPage onContinue={() => setStarted(true)} />
+  }
+  if (!authChecked) return null
+  if (!user) {
+    return <AuthPage onSignedIn={(u) => { setUser(u); setActiveThread(null); localStorage.removeItem(ACTIVE_THREAD_KEY) }} />
+  }
+  if (view === 'admin' && user.is_admin) {
+    return <AdminPage onBack={() => setView('chat')} />
   }
 
   return (
@@ -251,10 +266,17 @@ export default function App() {
         </div>
 
         <div style={{ borderTop: `1px solid ${colors.borderSoft}`, paddingTop: 16, display: 'flex', alignItems: 'center', gap: 10 }}>
-          <div style={{ width: 32, height: 32, borderRadius: '50%', background: colors.avatarBg, flexShrink: 0 }} />
-          <div>
-            <div style={{ fontSize: 13, fontWeight: 500, color: colors.textMain }}>You</div>
-            <div style={{ fontSize: 11.5, color: colors.textMuted }}>Local session · no account</div>
+          <div style={{ width: 32, height: 32, borderRadius: '50%', background: colors.avatarBg, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14, fontWeight: 600, color: colors.heading }}>
+            {user.username.slice(0, 1).toUpperCase()}
+          </div>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div style={{ fontSize: 13, fontWeight: 500, color: colors.textMain, overflow: 'hidden', textOverflow: 'ellipsis' }}>{user.username}</div>
+            <div style={{ fontSize: 11.5, display: 'flex', gap: 10 }}>
+              {user.is_admin && (
+                <a href="#" onClick={(e) => { e.preventDefault(); setView('admin') }} style={{ color: colors.agentBadgeText }}>Admin</a>
+              )}
+              <a href="#" onClick={(e) => { e.preventDefault(); handleSignOut() }} style={{ color: colors.textMuted }}>Sign out</a>
+            </div>
           </div>
         </div>
       </div>
