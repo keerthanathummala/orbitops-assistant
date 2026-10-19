@@ -2,10 +2,23 @@ import { useEffect, useRef, useState } from 'react'
 import { colors, fonts } from './theme'
 import { sendChat, fetchThreads, fetchThreadMessages, uploadDocument, fetchStatus, fetchHealth, runHealthCheck } from './api'
 import CoverPage from './CoverPage'
+import Markdown from './Markdown'
 
 const THREAD_IDS_KEY = 'compass_thread_ids'
 const ACTIVE_THREAD_KEY = 'compass_active_thread'
 const MAX_UPLOADS = 10
+const THEME_KEY = 'compass_theme'
+const THEME_LABELS = { system: 'Theme · auto', light: 'Theme · light', dark: 'Theme · dark' }
+const NEXT_THEME = { system: 'light', light: 'dark', dark: 'system' }
+
+function loadTheme() {
+  try {
+    const t = localStorage.getItem(THEME_KEY)
+    return t === 'light' || t === 'dark' ? t : 'system'
+  } catch {
+    return 'system'
+  }
+}
 
 function loadThreadIds() {
   try {
@@ -43,6 +56,8 @@ export default function App() {
   // Which backend pod/version answered last -- makes load balancing and
   // rolling updates visible when demoing the Kubernetes deployment.
   const [served, setServed] = useState(null)
+  // 'system' follows the laptop's light/dark setting; the toggle can pin either.
+  const [theme, setTheme] = useState(loadTheme)
   const fileInputRef = useRef(null)
   const scrollRef = useRef(null)
 
@@ -66,6 +81,17 @@ export default function App() {
   useEffect(() => {
     fetchHealth().then(setServed).catch(() => {})
   }, [])
+
+  useEffect(() => {
+    if (theme === 'system') delete document.documentElement.dataset.theme
+    else document.documentElement.dataset.theme = theme
+    try {
+      if (theme === 'system') localStorage.removeItem(THEME_KEY)
+      else localStorage.setItem(THEME_KEY, theme)
+    } catch {
+      // Storage blocked: the choice just won't survive a reload.
+    }
+  }, [theme])
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
@@ -208,7 +234,7 @@ export default function App() {
               onClick={(e) => { e.preventDefault(); handleSelectThread(t.thread_id) }}
               style={{
                 display: 'block', padding: '10px 10px', borderRadius: 7, fontSize: 13.5,
-                color: t.thread_id === activeThread ? '#28384A' : colors.textSecondary,
+                color: t.thread_id === activeThread ? colors.activeItemText : colors.textSecondary,
                 background: t.thread_id === activeThread ? colors.activeItemBg : 'transparent',
                 marginBottom: 4,
               }}
@@ -236,6 +262,13 @@ export default function App() {
             <div style={{ fontSize: 12.5, color: colors.textMuted, marginTop: 2 }}>Docs · GitHub · HackerNews · Cluster</div>
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button
+              onClick={() => setTheme(NEXT_THEME[theme])}
+              title="Switch between automatic, light and dark"
+              style={{ fontSize: 12, fontWeight: 500, color: colors.textSecondary, background: colors.white, border: `1px solid ${colors.border}`, borderRadius: 20, padding: '6px 12px', cursor: 'pointer', fontFamily: 'inherit' }}
+            >
+              {THEME_LABELS[theme]}
+            </button>
             <button
               onClick={handleHealthCheck}
               disabled={sending}
@@ -284,8 +317,8 @@ export default function App() {
                     </span>
                   )}
                 </div>
-                <div style={{ background: colors.white, border: `1px solid ${colors.borderSoft}`, padding: '16px 20px', borderRadius: '4px 16px 16px 16px', fontSize: 14.5, lineHeight: 1.6, color: colors.textMain, whiteSpace: 'pre-wrap' }}>
-                  {m.content}
+                <div style={{ background: colors.white, border: `1px solid ${colors.borderSoft}`, padding: '16px 20px', borderRadius: '4px 16px 16px 16px', fontSize: 14.5, lineHeight: 1.6, color: colors.textMain }}>
+                  <Markdown text={m.content} />
                 </div>
               </div>
             )
@@ -298,7 +331,7 @@ export default function App() {
               <span style={{ fontSize: 11.5, color: colors.textMuted, marginLeft: 2 }}>Thinking…</span>
             </div>
           )}
-          {error && <div style={{ color: '#B23A3A', fontSize: 13 }}>{error}</div>}
+          {error && <div style={{ color: colors.error, fontSize: 13 }}>{error}</div>}
         </div>
 
         {/* Input bar */}
@@ -324,7 +357,7 @@ export default function App() {
               disabled={sending || !input.trim()}
               style={{ width: 38, height: 38, flexShrink: 0, borderRadius: 10, background: colors.accent, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: sending || !input.trim() ? 0.6 : 1 }}
             >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={colors.accentText} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" style={{ stroke: colors.accentText }} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
                 <line x1="12" y1="19" x2="12" y2="5"></line>
                 <polyline points="5 12 12 5 19 12"></polyline>
               </svg>
