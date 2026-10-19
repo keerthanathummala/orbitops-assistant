@@ -52,6 +52,15 @@ def _build(temperature: float):
                                   temperature=temperature, max_output_tokens=MAX_OUTPUT_TOKENS)
 
 
+def status() -> dict:
+    """What the UI shows in its model pill: which provider/model answers, and
+    whether it's configured (for Gemini: an API key is set)."""
+    if LLM_PROVIDER == "ollama":
+        return {"provider": "ollama", "model": OLLAMA_MODEL, "configured": True}
+    return {"provider": "gemini", "model": GEMINI_MODEL,
+            "configured": bool(os.environ.get("GEMINI_API_KEY"))}
+
+
 def get_llm(temperature: float = 0.0):
     if temperature not in _llms:
         _llms[temperature] = _build(temperature)

@@ -164,12 +164,15 @@ export default function App() {
     }
   }
 
-  const googleQuota = status.google_search
-  const googlePillText = !googleQuota
-    ? 'Google Search'
-    : !googleQuota.configured
-    ? 'Google Search · off'
-    : `Google Search · ${googleQuota.used}/${googleQuota.limit} today`
+  // Model pill: the LLM that writes every answer (from /api/health).
+  const llmInfo = served?.llm
+  const llmPillText = !llmInfo
+    ? 'Gemini · connecting…'
+    : llmInfo.provider === 'ollama'
+      ? `Ollama · ${llmInfo.model}`
+      : llmInfo.configured
+        ? `Gemini · ${llmInfo.model}`
+        : 'Gemini · API key missing'
 
   if (!started) {
     return <CoverPage onContinue={() => setStarted(true)} />
@@ -244,7 +247,7 @@ export default function App() {
               Docs indexed · {status.docs_indexed}
             </div>
             <div style={{ fontSize: 12, fontWeight: 500, color: colors.googleBadgeText, background: colors.googleBadgeBg, border: `1px solid ${colors.googleBadgeBorder}`, borderRadius: 20, padding: '6px 12px' }}>
-              {googlePillText}
+              {llmPillText}
             </div>
           </div>
         </div>
@@ -330,7 +333,7 @@ export default function App() {
           <div style={{ textAlign: 'center', fontSize: 11, color: colors.textFaint, marginTop: 10 }}>
             {served?.pod
               ? `Served by pod ${served.pod} · version ${served.version}`
-              : 'Answers from the OrbitOps docs, GitHub, HackerNews & Google Search.'}
+              : 'Answers from the OrbitOps docs, GitHub, HackerNews & the live cluster, written by Gemini.'}
           </div>
         </div>
       </div>

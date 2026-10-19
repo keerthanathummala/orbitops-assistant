@@ -34,6 +34,7 @@ from . import google_search
 from . import file_extract
 from . import guardrails
 from . import cluster_ops
+from . import llm
 from .rate_limit import check_rate_limit
 
 app = FastAPI(title="OrbitOps Assistant API")
@@ -76,7 +77,8 @@ def _require_valid_thread_id(thread_id: str) -> None:
 @app.get("/api/health")
 def health():
     """Liveness: the process is up and serving requests."""
-    return {"status": "ok", "version": APP_VERSION, "pod": os.environ.get("HOSTNAME", "")}
+    return {"status": "ok", "version": APP_VERSION, "pod": os.environ.get("HOSTNAME", ""),
+            "llm": llm.status()}
 
 
 @app.get("/api/ready")
