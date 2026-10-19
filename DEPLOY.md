@@ -4,19 +4,32 @@
 
 ```
 Browser ──> GCP external load balancer (Service type LoadBalancer)
-              └─> frontend pods (nginx + React build)   2-4 replicas, HPA
-                    └─ /api ─> backend Service
-                                 └─> backend pods (FastAPI)   2-5 replicas, HPA
-                                       ├─> mysql   StatefulSet + 5Gi disk   chat history, threads, uploads
-                                       ├─> chroma  StatefulSet + 2Gi disk   vector store
-                                       ├─> redis   Deployment               shared rate limits
-                                       ├─> Gemini API (hosted LLM), GitHub / HackerNews / Google APIs
-                                       └─> Kubernetes API (read-only, own namespace) for the AIOps features
+              └─> frontend pods (nginx + React build)          2-4 replicas, HPA
+                    ├─ /api/auth, /api/admin ─> auth pods      2-4 replicas, HPA   sign-up, sign-in, admin page
+                    ├─ /api/ops ─────────────> ops pod         1 replica           health check; only pods that can read the cluster
+                    └─ /api/* ───────────────> backend pods    2-5 replicas, HPA   chat, history, uploads (the "chat service")
+                                                 └─ cluster questions ─> ops
+   auth, backend and ops all use:
+     mysql   StatefulSet + 5Gi disk   accounts, sessions, sign-in log, chats, uploads
+     chroma  StatefulSet + 2Gi disk   vector store (backend, ops)
+     redis   Deployment               shared rate limits
+   backend and ops call the Gemini API; backend also GitHub / HackerNews / Google.
 ```
 
-The backend pods are stateless: everything a request needs lives in MySQL,
-Chroma or Redis, so any pod can answer any request, and pods can be added,
-removed or replaced (rolling update) without losing chats or uploads.
+Seven services in all: four of ours (frontend, backend, auth, ops) and
+three stateful ones (mysql, chroma, redis). The app pods are stateless:
+everything a request needs lives in MySQL, Chroma or Redis, so any pod can
+answer any request, and pods can be added, removed, moved to another node
+or replaced (rolling update) without losing accounts, chats or uploads.
+
+Every Deployment spreads its replicas across nodes
+(`topologySpreadConstraints`), and frontend, backend and auth each have a
+PodDisruptionBudget (`minAvailable: 1`), so draining a node (a GKE upgrade,
+or the node-failure demo) never takes a whole service down.
+
+Every command below is also in [`commands.sh`](commands.sh), one step at a
+time and with a comment on each command: `./commands.sh setup`, `build`,
+`cluster`, `deploy`, then the `demo-*` steps.
 
 ## 0. Before you start
 
@@ -44,10 +57,13 @@ gcloud services enable container.googleapis.com artifactregistry.googleapis.com 
 
 gcloud artifacts repositories create orbitops --repository-format=docker --location=$REGION
 
-# Cloud Build builds the images in GCP (no local Docker needed)
+# Cloud Build builds the images in GCP (no local Docker needed). The backend
+# image runs the chat, auth and ops services, each with its own start command.
 export REG=$REGION-docker.pkg.dev/$PROJECT_ID/orbitops
 gcloud builds submit backend  --tag $REG/backend:v1
 gcloud builds submit frontend --tag $REG/frontend:v1
+# The same backend image tagged v2, ready for the rolling-update demo
+gcloud artifacts docker tags add $REG/backend:v1 $REG/backend:v2
 ```
 
 ## 3. Cluster
@@ -64,36 +80,41 @@ gcloud container clusters get-credentials orbitops --zone $REGION-a
 
 ```bash
 # point the manifests at your registry
-sed -i "s/PROJECT_ID/$PROJECT_ID/g" k8s/20-backend.yaml k8s/21-frontend.yaml   # macOS: sed -i ''
+sed -i "s/PROJECT_ID/$PROJECT_ID/g" k8s/2*.yaml   # macOS: sed -i ''  (commands.sh does this without editing the files)
 
 kubectl apply -f k8s/00-namespace.yaml
 cp k8s/01-secrets.example.yaml k8s/secrets.yaml   # fill in passwords, GEMINI_API_KEY and ADMIN_PASSWORD (git-ignored)
 kubectl apply -f k8s/secrets.yaml
 kubectl apply -f k8s/02-configmap.yaml -f k8s/10-mysql.yaml -f k8s/11-chroma.yaml -f k8s/12-redis.yaml
-kubectl apply -f k8s/22-rbac.yaml       # read-only cluster access for the AIOps features
-kubectl apply -f k8s/20-backend.yaml -f k8s/21-frontend.yaml -f k8s/30-hpa.yaml
+kubectl apply -f k8s/22-rbac.yaml       # read-only cluster access, for the ops service only
+kubectl apply -f k8s/20-backend.yaml -f k8s/21-frontend.yaml -f k8s/23-auth.yaml -f k8s/24-ops.yaml -f k8s/30-hpa.yaml
 
 kubectl -n orbitops get pods -w                 # wait until everything is Running/Ready
 kubectl -n orbitops get svc frontend            # EXTERNAL-IP is the app's public address
 ```
 
-## 5. Demo script (Week 13)
+## 5. The 4-minute demo (Week 13)
 
-| Show | Command | What to point at |
-|---|---|---|
-| Microservices | `kubectl -n orbitops get deploy,sts,svc,pods -o wide` | 6 services across nodes |
-| Load balancing | refresh the app / `curl http://EXTERNAL-IP/api/health` a few times | footer and `pod` change between backend pods |
-| Manual scaling | `kubectl -n orbitops scale deploy/backend --replicas=4` | new pods appear, history still there |
-| Autoscaling | `kubectl -n orbitops run load --rm -it --image=busybox -- sh -c "while true; do wget -q -O- http://backend:8000/api/health; done"` then `kubectl -n orbitops get hpa -w` | replicas climb with CPU |
-| Self-healing | `kubectl -n orbitops delete pod <a backend pod>` | replaced automatically, app stays up |
-| Rolling update | build `:v2` (`gcloud builds submit backend --tag $REG/backend:v2`), change image tag and `APP_VERSION` to `v2` in `k8s/20-backend.yaml`, `kubectl apply -f k8s/20-backend.yaml`, `kubectl -n orbitops rollout status deploy/backend` | pods replaced one at a time; footer shows `version v2`; no downtime |
-| Rollback | `kubectl -n orbitops rollout history deploy/backend` then `kubectl -n orbitops rollout undo deploy/backend` | footer back to `version v1` |
-| Persistence | `kubectl -n orbitops delete pod mysql-0` | chats survive (persistent disk) |
-| Accounts | create an account, chat, sign out, sign in as the admin and click **Admin** | sign-in times and IP addresses listed; the admin can't open the chat |
-| AIOps: healthy | click **Run health check** in the app | "Healthy", all pods ready |
-| AIOps: incident | deploy a broken version: `kubectl -n orbitops set image deploy/backend backend=$REG/backend:does-not-exist`, then click **Run health check** | flags ImagePullBackOff / stuck rollout, explains it, suggests `rollout undo` with the runbook |
-| AIOps: questions | ask "is anything failing?", "why did the backend pod restart?", "explain the backend errors" | answers from live pods, events and logs (OPS badge) |
-| AIOps: recover | `kubectl -n orbitops rollout undo deploy/backend`, then health check again | back to Healthy |
+Before the demo: deploy, open the app in a browser, sign in, and check that
+`./commands.sh status` shows everything Ready. Use a Gemini key with quota
+to spare on the day (a fresh key, or billing turned on for the key's
+project): the free tier allows only a few requests a minute, and every
+user shares the one key. The v2 image was already pushed by `build`, so
+nothing has to build during the demo.
+
+| Time | Show | Run | What to point at |
+|---|---|---|---|
+| 0:00 | Microservices | `./commands.sh demo-services` | frontend, backend (chat), auth and ops Deployments plus MySQL, Chroma and Redis, each with its own Service, spread over both nodes |
+| 0:30 | Load balancing | `./commands.sh demo-lb`, and refresh the app | `pod` in the replies and the footer changes between backend pods |
+| 0:50 | Autoscaling | `./commands.sh demo-scale` (Ctrl+C after the jump), then `demo-scale-stop` | 3 load pods × 4 loops push CPU past 60%; replicas climb from 2 towards 5, and the cluster adds a node if they don't fit |
+| 1:50 | Node failure / self-healing | `./commands.sh demo-node-failure` | a node is drained; its pods are recreated on the other node, the disruption budgets keep one of each running, and the app keeps answering during it |
+| 2:40 | Rolling update and rollback | `./commands.sh demo-update`, then `demo-rollback` | pods replaced one at a time with no downtime; footer shows `version v2`, then `v1` again |
+| 3:20 | AIOps incident | `./commands.sh demo-incident`, click **Run health check**, then `demo-recover` | the ops service flags the stuck rollout (ImagePullBackOff), explains it with the runbook and suggests `rollout undo`; after the undo it reports Healthy |
+
+If there is time left: ask "why did the backend pod restart?" (an ops
+answer from live pods and logs), show the admin page (sign-in times and
+IPs, no chats), or `kubectl -n orbitops delete pod mysql-0` to show chats
+survive a database restart.
 
 ## 6. Stop paying when you're done
 
