@@ -27,7 +27,7 @@ from typing import Dict
 from langchain_core.messages import HumanMessage
 
 LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "gemini").lower()
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:7b")
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 
