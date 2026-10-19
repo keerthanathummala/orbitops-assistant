@@ -151,7 +151,7 @@ def is_valid_thread_id(thread_id: str) -> bool:
 
 # ---------------------------------------------------------------------------
 # Anti-hallucination: lightweight faithfulness check (same heuristic already
-# used/validated in the A1 notebook's eval section) applied to BOTH pipelines
+# used/validated in the original notebook's eval section) applied to BOTH pipelines
 # at generation time, not just offline eval.
 # ---------------------------------------------------------------------------
 

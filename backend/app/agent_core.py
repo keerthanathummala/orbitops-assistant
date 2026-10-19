@@ -1,9 +1,10 @@
 """
-Domain Intelligence Agent — ported from COMP2701 Assessment 2 (LangGraph:
-fetch_node -> analyse_node, GitHub + HackerNews tools, regex guardrail,
-LLM-as-judge eval suite already proven at 86% in the notebook).
+Domain Intelligence Agent (LangGraph: fetch_node -> analyse_node, GitHub +
+HackerNews tools, regex guardrail). The agent was first written by the
+author for an earlier course (COMP2701), where its LLM-as-judge eval scored
+86%; the changes below were made for this cloud deployment.
 
-Fixes/changes relative to the graded submission:
+Fixes/changes relative to the original version:
 
 1. route_after_fetch(): when results stay empty after 3 fetch attempts, the
    original code returned 'end' directly from the conditional edge, which
@@ -269,7 +270,7 @@ def fetch_node(state: AgentState) -> dict:
     has_results = len(repos_list) > 0 or len(stories_list) > 0 or len(google_list) > 0
 
     # NOTE: deliberately NOT setting current_node='end' for the empty-results
-    # case. The original graded submission did that here, which meant
+    # case. The original version did that here, which meant
     # route_after_fetch's guardrail check (`current_node == 'end'`) intercepted
     # every empty-results case on the very first attempt -- the iteration<3
     # retry logic below it was dead code. Using a neutral 'fetched' marker lets
@@ -287,7 +288,7 @@ def fetch_node(state: AgentState) -> dict:
 def analyse_node(state: AgentState) -> dict:
     """Combined synthesis + formatting in a single LLM call.
 
-    The graded submission split this into analyse_node (cross-reference
+    The original version split this into analyse_node (cross-reference
     synthesis) -> respond_node (reformat into the final structure), each a
     separate Ollama round trip. On CPU that's two 20-60s+ calls for every
     agent turn on top of the fetch_node keyword-extraction call, which made
@@ -447,7 +448,7 @@ def get_agent():
 def run_agent(query: str, thread_id: str = "run-1") -> dict:
     """FIX for the multi-turn memory gap: carries forward chat_history from
     earlier turns instead of always building a fresh initial state (which is
-    what the graded submission did despite having MemorySaver wired up).
+    what the original version did despite having MemorySaver wired up).
 
     The history is now read from the shared chat database (store.py) rather
     than the graph's in-memory MemorySaver checkpoint. Once the backend runs
