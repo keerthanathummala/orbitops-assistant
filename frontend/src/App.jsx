@@ -213,7 +213,10 @@ export default function App() {
       <div style={{ width: 272, flex: '0 0 272px', background: colors.sidebarBg, borderRight: `1px solid ${colors.border}`, display: 'flex', flexDirection: 'column', padding: '24px 18px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '0 6px 22px', borderBottom: `1px solid ${colors.borderSoft}`, marginBottom: 18 }}>
           <div style={{ width: 30, height: 30, borderRadius: 8, background: colors.accent, flexShrink: 0 }} />
-          <div style={{ fontFamily: fonts.heading, fontWeight: 600, fontSize: 21, color: colors.heading, letterSpacing: '-0.01em' }}>OrbitOps</div>
+          <div>
+            <div style={{ fontFamily: fonts.heading, fontWeight: 600, fontSize: 19, color: colors.heading, letterSpacing: '-0.01em' }}>OrbitOps Assistant</div>
+            <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 2 }}>Docs · GitHub · HackerNews · Cluster</div>
+          </div>
         </div>
 
         <button
@@ -259,11 +262,7 @@ export default function App() {
       {/* Main column */}
       <div style={{ flex: '999 1 560px', minWidth: 0, display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
         {/* Top bar */}
-        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '18px 32px', borderBottom: `1px solid ${colors.border}`, background: colors.sidebarBg }}>
-          <div>
-            <div style={{ fontFamily: fonts.heading, fontWeight: 600, fontSize: 19, color: colors.heading }}>OrbitOps Assistant</div>
-            <div style={{ fontSize: 12.5, color: colors.textMuted, marginTop: 2 }}>Docs · GitHub · HackerNews · Cluster</div>
-          </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end', gap: 12, padding: '18px 32px', borderBottom: `1px solid ${colors.border}`, background: colors.sidebarBg }}>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <button
               onClick={() => setTheme(NEXT_THEME[theme])}
