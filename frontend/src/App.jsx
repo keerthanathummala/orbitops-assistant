@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { colors, fonts } from './theme'
-import { sendChat, fetchThreads, fetchThreadMessages, uploadDocument, fetchStatus, fetchHealth, runHealthCheck, fetchMe, signOut, getToken } from './api'
+import { sendChat, fetchThreads, fetchThreadMessages, uploadDocument, fetchUploads, removeUpload, fetchStatus, fetchHealth, runHealthCheck, fetchMe, signOut, getToken } from './api'
 import CoverPage from './CoverPage'
 import AuthPage from './AuthPage'
 import AdminPage from './AdminPage'
@@ -43,7 +43,9 @@ export default function App() {
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const [status, setStatus] = useState({ docs_indexed: 0, google_search: null })
-  const [uploadedCount, setUploadedCount] = useState(0)
+  // Files uploaded to the active chat: [{id, filename}], each removable.
+  const [uploads, setUploads] = useState([])
+  const uploadedCount = uploads.length
   const [error, setError] = useState('')
   // Which backend pod/version answered last -- makes load balancing and
   // rolling updates visible when demoing the Kubernetes deployment.
@@ -85,10 +87,11 @@ export default function App() {
     if (!activeThread) {
       setMessages([])
       setStatus({ docs_indexed: 0, google_search: null })
-      setUploadedCount(0)
+      setUploads([])
       return
     }
     fetchThreadMessages(activeThread).then(setMessages).catch(() => {})
+    fetchUploads(activeThread).then(setUploads).catch(() => {})
     fetchStatus(activeThread).then((s) => s && setStatus(s)).catch(() => {})
   }, [activeThread, user])
 
@@ -188,9 +191,20 @@ export default function App() {
       return
     }
     try {
-      const res = await uploadDocument(threadId, file)
-      setUploadedCount(res.uploaded_count)
+      await uploadDocument(threadId, file)
+      fetchUploads(threadId).then(setUploads).catch(() => {})
       fetchStatus(threadId).then((s) => s && setStatus(s)).catch(() => {})
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  async function handleRemoveUpload(upload) {
+    setError('')
+    try {
+      await removeUpload(activeThread, upload.id)
+      setUploads((prev) => prev.filter((u) => u.id !== upload.id))
+      fetchStatus(activeThread).then((s) => s && setStatus(s)).catch(() => {})
     } catch (err) {
       setError(err.message)
     }
@@ -360,6 +374,23 @@ export default function App() {
 
         {/* Input bar */}
         <div style={{ padding: '16px 10% 26px' }}>
+          {uploads.length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
+              {uploads.map((u) => (
+                <span key={u.id} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12.5, color: colors.textSecondary, background: colors.white, border: `1px solid ${colors.border}`, borderRadius: 16, padding: '4px 6px 4px 11px', maxWidth: 260 }}>
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={u.filename}>{u.filename}</span>
+                  <button
+                    onClick={() => handleRemoveUpload(u)}
+                    title={`Remove ${u.filename}`}
+                    aria-label={`Remove ${u.filename}`}
+                    style={{ border: 'none', background: colors.bluebg, color: colors.textMuted, borderRadius: '50%', width: 18, height: 18, lineHeight: '16px', fontSize: 13, padding: 0, cursor: 'pointer', flexShrink: 0 }}
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
           <div style={{ background: colors.white, border: `1px solid ${colors.border}`, borderRadius: 14, padding: '10px 10px 10px 18px', display: 'flex', alignItems: 'center', gap: 10, boxShadow: '0 1px 2px rgba(28,42,56,0.05)' }}>
             <input
               value={input}

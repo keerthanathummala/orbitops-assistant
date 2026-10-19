@@ -96,6 +96,14 @@ export function uploadDocument(threadId, file) {
   return request('/api/upload', { method: 'POST', form })
 }
 
+export function fetchUploads(threadId) {
+  return request(`/api/uploads?thread_id=${threadId}`)
+}
+
+export function removeUpload(threadId, uploadId) {
+  return request(`/api/uploads/${uploadId}?thread_id=${threadId}`, { method: 'DELETE' })
+}
+
 export function fetchStatus(threadId) {
   return request(`/api/status?thread_id=${threadId}`)
 }

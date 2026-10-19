@@ -215,8 +215,13 @@ def chat(req: ChatRequest, user: dict = Depends(auth.current_user)):
         raise HTTPException(429, "Too many messages — slow down and try again shortly.")
 
     store.ensure_thread(thread_id, title_hint=req.message, user_id=user["id"])
+    try:
+        result = dispatcher.handle_message(thread_id, req.message)
+    except Exception as e:
+        if llm.is_quota_error(e):
+            raise HTTPException(429, llm.QUOTA_MESSAGE)
+        raise
     store.add_message(thread_id, "user", req.message)
-    result = dispatcher.handle_message(thread_id, req.message)
 
     for seg in result["segments"]:
         store.add_message(
@@ -282,6 +287,24 @@ async def upload_document(thread_id: str = Form(...), file: UploadFile = File(..
             "max_uploads": rag_core.MAX_UPLOADS}
 
 
+@app.get("/api/uploads")
+def list_uploads(thread_id: str, user: dict = Depends(auth.current_user)):
+    _require_own_thread(thread_id, user)
+    return store.list_uploads(thread_id)
+
+
+@app.delete("/api/uploads/{upload_id}")
+def remove_upload(upload_id: int, thread_id: str, user: dict = Depends(auth.current_user)):
+    """Remove one uploaded document from a chat, freeing a slot under the
+    10-file limit. Every replica drops it from its index on its next sync."""
+    _require_own_thread(thread_id, user)
+    if not store.delete_upload(thread_id, upload_id):
+        raise HTTPException(404, "File not found.")
+    session = rag_core.get_or_create_session(thread_id)
+    return {"removed": upload_id, "uploaded_count": session.uploaded_count,
+            "max_uploads": rag_core.MAX_UPLOADS}
+
+
 # ---------------------------------------------------------------------------
 # Status pills (docs indexed, Google quota)
 # ---------------------------------------------------------------------------
@@ -307,7 +330,12 @@ def ops_health_check(thread_id: str = Form(...), user: dict = Depends(auth.curre
         raise HTTPException(429, "Too many health checks — try again shortly.")
 
     session = rag_core.get_or_create_session(thread_id)
-    result = cluster_ops.health_check(rag_session=session)
+    try:
+        result = cluster_ops.health_check(rag_session=session)
+    except Exception as e:
+        if llm.is_quota_error(e):
+            raise HTTPException(429, llm.QUOTA_MESSAGE)
+        raise
 
     label = {"healthy": "Healthy", "warning": "Warning", "critical": "Critical",
              "unavailable": "Unavailable"}[result["status"]]

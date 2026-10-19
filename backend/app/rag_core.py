@@ -411,7 +411,9 @@ class RagSession:
         self.thread_id = thread_id
         self.collection_name = f"session_{thread_id}"
         self.model = get_embed_model()
-        self.uploaded_count = 0
+        # Database ids of the uploads indexed on this pod, so additions and
+        # removals made through any replica are picked up on the next sync.
+        self.indexed_upload_ids: set = set()
 
         base_docs = load_documents(DATA_DIR)
         self.chunks: List[Document] = chunk_documents(base_docs)
@@ -441,15 +443,44 @@ class RagSession:
         store.add_upload(self.thread_id, filename, raw_text)
         self.sync_uploads()
 
-    def sync_uploads(self) -> None:
-        """Index any uploads for this thread that this pod hasn't seen yet
-        (whether this pod or another one received them)."""
-        for upload in store.get_uploads(self.thread_id, offset=self.uploaded_count):
-            self._index_upload(upload["filename"], upload["content"])
+    @property
+    def uploaded_count(self) -> int:
+        return len(self.indexed_upload_ids)
 
-    def _index_upload(self, filename: str, raw_text: str) -> None:
+    def sync_uploads(self) -> None:
+        """Bring this pod's index in line with the thread's uploads in the
+        database: index new ones and drop removed ones, whichever replica
+        handled the change."""
+        current = set(store.get_upload_ids(self.thread_id))
+        removed = self.indexed_upload_ids - current
+        if removed:
+            self._remove_uploads(removed)
+        for upload_id in sorted(current - self.indexed_upload_ids):
+            upload = store.get_upload(self.thread_id, upload_id)
+            if upload:
+                self._index_upload(upload_id, upload["filename"], upload["content"])
+
+    def _remove_uploads(self, upload_ids: set) -> None:
+        doc_ids = {f"upload_{i}" for i in upload_ids}
+        keep = [i for i, c in enumerate(self.chunks) if c.metadata["doc_id"] not in doc_ids]
+        gone = [c.metadata["chunk_id"] for c in self.chunks if c.metadata["doc_id"] in doc_ids]
+        self.chunks = [self.chunks[i] for i in keep]
+        self.embeddings = self.embeddings[keep] if len(keep) else self.embeddings[:0]
+        for doc_id in doc_ids:
+            self.raw_docs.pop(doc_id, None)
+        self.indexed_upload_ids -= upload_ids
+        self.bm25_index, _ = build_bm25_index(self.chunks) if self.chunks else (None, None)
+        if gone:
+            try:
+                get_or_create_collection(self.collection_name).delete(ids=gone)
+            except Exception:
+                # Another replica may have deleted them already; stale ids
+                # are also filtered out at lookup time in hybrid_retrieve.
+                pass
+
+    def _index_upload(self, upload_id: int, filename: str, raw_text: str) -> None:
         doc_dict = {
-            "doc_id": f"upload_{self.uploaded_count}",
+            "doc_id": f"upload_{upload_id}",
             "title": filename,
             "date": None,
             "team": None,
@@ -460,7 +491,7 @@ class RagSession:
         new_chunks = chunk_documents([doc_dict], doc_id_prefix="")
         self.chunks.extend(new_chunks)
         self.raw_docs[doc_dict["doc_id"]] = raw_text
-        self.uploaded_count += 1
+        self.indexed_upload_ids.add(upload_id)
 
         # Rebuild BM25 (cheap at this corpus size) and extend dense + chroma indexes.
         self.bm25_index, _ = build_bm25_index(self.chunks)

@@ -354,15 +354,32 @@ def count_uploads(thread_id: str) -> int:
         return int(row["c"])
 
 
-def get_uploads(thread_id: str, offset: int = 0) -> List[dict]:
-    """Uploads in the order they were added, skipping the first `offset`
-    (the ones a pod has already indexed)."""
+def get_upload_ids(thread_id: str) -> List[int]:
     with _conn() as conn:
-        rows = conn.execute(
-            "SELECT filename, content FROM uploads WHERE thread_id = ? ORDER BY id ASC",
-            (thread_id,),
-        ).fetchall()
-        return [dict(r) for r in rows][offset:]
+        rows = conn.execute("SELECT id FROM uploads WHERE thread_id = ? ORDER BY id ASC",
+                            (thread_id,)).fetchall()
+        return [int(r["id"]) for r in rows]
+
+
+def get_upload(thread_id: str, upload_id: int) -> Optional[dict]:
+    with _conn() as conn:
+        row = conn.execute("SELECT filename, content FROM uploads WHERE thread_id = ? AND id = ?",
+                           (thread_id, upload_id)).fetchone()
+        return dict(row) if row else None
+
+
+def list_uploads(thread_id: str) -> List[dict]:
+    """Uploaded files for the chat's file list (names only, not the text)."""
+    with _conn() as conn:
+        rows = conn.execute("SELECT id, filename, created_at FROM uploads WHERE thread_id = ? "
+                            "ORDER BY id ASC", (thread_id,)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def delete_upload(thread_id: str, upload_id: int) -> bool:
+    with _conn() as conn:
+        cur = conn.execute("DELETE FROM uploads WHERE thread_id = ? AND id = ?", (thread_id, upload_id))
+        return cur.rowcount > 0
 
 
 # ---------------------------------------------------------------------------
