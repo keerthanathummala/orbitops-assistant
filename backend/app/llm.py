@@ -67,18 +67,6 @@ def get_llm(temperature: float = 0.0):
     return _llms[temperature]
 
 
-def is_quota_error(exc: BaseException) -> bool:
-    """True when the provider refused the call for rate/quota reasons (HTTP
-    429). Every user shares one API key, so this is the app-wide free-tier
-    limit, not something the current user did."""
-    text = f"{type(exc).__name__} {exc}"
-    return any(s in text for s in ("429", "RESOURCE_EXHAUSTED", "ResourceExhausted", "quota"))
-
-
-QUOTA_MESSAGE = ("The AI model's free usage limit has been reached for now. "
-                 "Please try again in a minute, or later today if the daily limit is used up.")
-
-
 def generate(prompt: str, temperature: float = 0.0) -> str:
     """Single-prompt completion returning plain text. Gemini can return
     content as a list of parts rather than a string, so normalise here
