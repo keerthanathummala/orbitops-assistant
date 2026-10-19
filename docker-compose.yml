@@ -22,10 +22,12 @@ services:
     volumes:
       - chroma-data:/data
 
+  # The three backend services share one image and one environment; only
+  # the command differs (see README "Architecture").
   backend:
     build: ./backend
     env_file: ./backend/.env
-    environment:
+    environment: &backend-env
       MYSQL_HOST: mysql
       MYSQL_USER: orbitops
       MYSQL_PASSWORD: orbitops
@@ -33,16 +35,35 @@ services:
       REDIS_URL: redis://redis:6379/0
       CHROMA_HOST: chroma
       CHROMA_PORT: "8000"
+      AUTH_SERVICE_URL: http://auth:8000
+      OPS_SERVICE_URL: http://ops:8000
+      CHAT_SERVICE_URL: http://backend:8000
       APP_VERSION: local
     depends_on: [mysql, redis, chroma]
     deploy:
       replicas: 2
 
+  auth:
+    build: ./backend
+    command: ["python", "-m", "uvicorn", "app.auth_service:app", "--host", "0.0.0.0", "--port", "8000"]
+    env_file: ./backend/.env
+    environment: *backend-env
+    depends_on: [mysql, redis]
+
+  # No cluster here, so cluster questions are answered from the runbooks and
+  # the health check reports "Unavailable", as when running without Docker.
+  ops:
+    build: ./backend
+    command: ["python", "-m", "uvicorn", "app.ops_service:app", "--host", "0.0.0.0", "--port", "8000"]
+    env_file: ./backend/.env
+    environment: *backend-env
+    depends_on: [mysql, redis, chroma]
+
   frontend:
     build: ./frontend
     ports:
       - "8080:80"
-    depends_on: [backend]
+    depends_on: [backend, auth, ops]
 
 volumes:
   mysql-data:

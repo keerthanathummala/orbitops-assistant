@@ -1,5 +1,7 @@
 """
-RAG pipeline — ported from COMP2701 Assessment 1 (BM25 + dense + ChromaDB + hybrid RRF).
+RAG pipeline (BM25 + dense + ChromaDB + hybrid RRF). The retrieval core was
+first written by the author for an earlier course (COMP2701); everything
+below "Changes ..." was added for this cloud deployment.
 
 Changes from the original notebook:
   - generate_answer_from_context() no longer returns a raw chunk via keyword-overlap
@@ -59,6 +61,14 @@ def get_embed_model() -> SentenceTransformer:
     return _embed_model
 
 
+def warm_up() -> None:
+    """Load the embedding model at startup instead of on the first question.
+    The pod only reports ready after this, so a new replica (scale-out,
+    rolling update, rescheduled after a node failure) never makes a user
+    wait for the model to load."""
+    get_embed_model().encode(["warm up"])
+
+
 @dataclass
 class Document:
     text: str
@@ -66,7 +76,7 @@ class Document:
 
 
 # ---------------------------------------------------------------------------
-# Loading & chunking (unchanged logic from the graded A1 submission)
+# Loading & chunking (unchanged from the original version)
 # ---------------------------------------------------------------------------
 
 def parse_metadata_and_text(raw_text: str) -> dict:
@@ -115,8 +125,8 @@ def clean_text(text: str) -> str:
 
 
 def chunk_text(text: str, chunk_size: int = 480, chunk_overlap: int = 80) -> List[str]:
-    """Overlapping character-window chunking (same algorithm as the graded
-    submission; the window size itself was raised from the graded 180 chars
+    """Overlapping character-window chunking (same algorithm as the original
+    version; the window size itself was raised from the original 180 chars
     to 480. 180 chars is short enough to slice a sentence apart mid-fact
     (e.g. "between 2018 and 2040" split across two separate chunks), and
     retrieval then hands the LLM disconnected fragments it can misattribute
@@ -300,7 +310,7 @@ def hybrid_retrieve(query: str, chunks: List[Document], bm25_index, embeddings: 
 
 
 # ---------------------------------------------------------------------------
-# Prompting + real LLM generation (replaces the A1 heuristic stub)
+# Prompting + real LLM generation (replaces the original heuristic stub)
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
@@ -514,11 +524,11 @@ class RagSession:
         )
 
     def answer(self, query: str, top_k: int = 12) -> dict:
-        # top_k was 4 (fine for the short graded OrbitOps docs, ~180-char
+        # top_k was 4 (fine for the short original OrbitOps docs, ~180-char
         # chunks each). Once uploads can be full reports (10-20 pages, 150+
         # chunks), 4 is too small a slice to reliably contain the right
         # chunk -- raised to 12 so longer uploaded documents get a fair
-        # shot at retrieval without touching the graded chunking itself.
+        # shot at retrieval without touching the original chunking itself.
         # Guardrail: previously only the Agent path sanitised input. With
         # multiple strangers able to reach this app once deployed, the RAG
         # path needed the same prompt-injection/length checks.

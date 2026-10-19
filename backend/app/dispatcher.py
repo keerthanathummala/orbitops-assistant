@@ -17,12 +17,48 @@ Routing is keyword-first, sequential for "both":
 
 from __future__ import annotations
 
+import os
 import re
+import time
 from typing import Literal
+
+import httpx
 
 from . import rag_core
 from . import agent_core
 from . import cluster_ops
+
+# On Kubernetes, cluster questions go to the separate ops service, the only
+# pods allowed to read the cluster. Unset (local dev), cluster_ops runs here.
+OPS_SERVICE_URL = os.environ.get("OPS_SERVICE_URL", "").rstrip("/")
+_ops_available = (float("-inf"), False)  # (checked_at, available)
+
+
+def ops_available() -> bool:
+    global _ops_available
+    if not OPS_SERVICE_URL:
+        return cluster_ops.is_available()
+    # Asked on every message, so cache the answer for 30s rather than make
+    # an extra call each time. If the ops service is down, cluster
+    # questions fall back to the docs instead of failing.
+    checked_at, available = _ops_available
+    if time.monotonic() - checked_at > 30:
+        try:
+            r = httpx.get(f"{OPS_SERVICE_URL}/internal/ops/available", timeout=3)
+            available = bool(r.json().get("available"))
+        except Exception:
+            available = False
+        _ops_available = (time.monotonic(), available)
+    return available
+
+
+def ops_answer(thread_id: str, query: str) -> dict:
+    if not OPS_SERVICE_URL:
+        return cluster_ops.ops_answer(query, rag_session=rag_core.get_or_create_session(thread_id))
+    r = httpx.post(f"{OPS_SERVICE_URL}/internal/ops/answer",
+                   json={"thread_id": thread_id, "query": query}, timeout=110)
+    r.raise_for_status()  # a 429 here is the model quota; main.py explains it
+    return r.json()
 
 AGENT_SIGNALS = [
     r"\bgithub\b", r"\brepo(s|sitory|sitories)?\b", r"\bstars?\b",
@@ -38,7 +74,7 @@ OPS_SIGNALS = [
     r"\bpods?\b", r"\breplicas?\b", r"\bautoscal\w*\b", r"\bhpa\b",
     r"\brestart(s|ed|ing)?\b", r"\bcrash\w*\b", r"\boom\w*\b", r"\brollouts?\b",
     r"\b(health|healthy|status) of\b", r"\bis (anything|something) (failing|broken|down|wrong)\b",
-    r"\b(backend|frontend|mysql|chroma|redis) (logs?|errors?|down|slow|failing|status)\b",
+    r"\b(backend|frontend|auth|ops|mysql|chroma|redis) (logs?|errors?|down|slow|failing|status)\b",
     r"\b(explain|show|check) (me )?(the )?(\w+ )?(logs?|errors?)\b",
 ]
 
@@ -55,7 +91,7 @@ def classify_query(query: str) -> Route:
     # Only when the app can actually see a cluster -- running locally, a
     # question mentioning "pods" is better answered from the docs than with
     # "cluster access isn't configured".
-    if cluster_ops.is_available():
+    if ops_available():
         for pattern in OPS_SIGNALS:
             if re.search(pattern, q):
                 return "ops"
@@ -76,8 +112,7 @@ def handle_message(thread_id: str, query: str) -> dict:
     segments = []
 
     if route == "ops":
-        rag_session = rag_core.get_or_create_session(thread_id)
-        ops_result = cluster_ops.ops_answer(query, rag_session=rag_session)
+        ops_result = ops_answer(thread_id, query)
         segments.append({"source": "ops", "text": ops_result["text"], "citations": ops_result["citations"]})
 
     if route in ("rag", "both"):

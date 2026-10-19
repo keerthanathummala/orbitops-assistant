@@ -1,0 +1,83 @@
+# Auth service: sign-up, sign-in and the admin page (backend/app/auth_service.py).
+# Same image as the chat service, started with a different command. It
+# loads no models, so it starts in seconds and needs little memory, and a
+# load spike on chat can't stop people signing in.
+apiVersion: v1
+kind: Service
+metadata:
+  name: auth
+  namespace: orbitops
+spec:
+  selector:
+    app: auth
+  ports:
+    - port: 8000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth
+  namespace: orbitops
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: auth
+  template:
+    metadata:
+      labels:
+        app: auth
+    spec:
+      automountServiceAccountToken: false
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector: { matchLabels: { app: auth } }
+      containers:
+        - name: auth
+          image: australia-southeast1-docker.pkg.dev/PROJECT_ID/orbitops/backend:v1
+          command: ["python", "-m", "uvicorn", "app.auth_service:app", "--host", "0.0.0.0", "--port", "8000"]
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef: { name: orbitops-config }
+          env:
+            - name: APP_VERSION
+              value: v1
+            - name: MYSQL_PASSWORD
+              valueFrom: { secretKeyRef: { name: orbitops-secrets, key: MYSQL_PASSWORD } }
+            - name: ADMIN_USERNAME
+              valueFrom: { secretKeyRef: { name: orbitops-secrets, key: ADMIN_USERNAME, optional: true } }
+            - name: ADMIN_PASSWORD
+              valueFrom: { secretKeyRef: { name: orbitops-secrets, key: ADMIN_PASSWORD, optional: true } }
+          resources:
+            requests: { cpu: 100m, memory: 192Mi }
+            limits: { cpu: 500m, memory: 384Mi }
+          startupProbe:
+            httpGet: { path: /api/health, port: 8000 }
+            periodSeconds: 5
+            failureThreshold: 24
+          readinessProbe:
+            httpGet: { path: /api/ready, port: 8000 }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /api/health, port: 8000 }
+            periodSeconds: 20
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: auth
+  namespace: orbitops
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: auth

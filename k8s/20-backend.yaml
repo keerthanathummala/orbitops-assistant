@@ -1,3 +1,5 @@
+# Chat service: chat, history, uploads, docs and web answers. The part that
+# does the heavy lifting, so it is the one the HPA scales (30-hpa.yaml).
 apiVersion: v1
 kind: Service
 metadata:
@@ -30,7 +32,16 @@ spec:
       labels:
         app: backend
     spec:
-      serviceAccountName: orbitops-backend   # read-only cluster access, see 22-rbac.yaml
+      # The chat pods handle untrusted user input, so they get no Kubernetes
+      # API access at all; cluster questions go to the ops service.
+      automountServiceAccountToken: false
+      # Spread replicas over different nodes, so losing one node never takes
+      # every chat pod down at once (see the node-failure demo in DEPLOY.md).
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector: { matchLabels: { app: backend } }
       containers:
         - name: backend
           # Replace PROJECT_ID (and region) with yours; see DEPLOY.md.
@@ -52,21 +63,32 @@ spec:
               valueFrom: { secretKeyRef: { name: orbitops-secrets, key: GOOGLE_API_KEY } }
             - name: GOOGLE_CSE_ID
               valueFrom: { secretKeyRef: { name: orbitops-secrets, key: GOOGLE_CSE_ID } }
-            - name: ADMIN_USERNAME
-              valueFrom: { secretKeyRef: { name: orbitops-secrets, key: ADMIN_USERNAME, optional: true } }
-            - name: ADMIN_PASSWORD
-              valueFrom: { secretKeyRef: { name: orbitops-secrets, key: ADMIN_PASSWORD, optional: true } }
           resources:
             # The embedding model + torch need ~1GB.
             requests: { cpu: 250m, memory: 1Gi }
             limits: { cpu: "1", memory: 2Gi }
           startupProbe:
+            # Startup loads the embedding model (baked into the image) and
+            # waits for MySQL, so allow up to 3 min before liveness applies.
             httpGet: { path: /api/health, port: 8000 }
             periodSeconds: 5
-            failureThreshold: 36       # up to 3 min to load models and reach MySQL
+            failureThreshold: 36
           readinessProbe:
             httpGet: { path: /api/ready, port: 8000 }
             periodSeconds: 10
           livenessProbe:
             httpGet: { path: /api/health, port: 8000 }
             periodSeconds: 20
+---
+# Voluntary disruptions (kubectl drain, GKE node upgrades) must leave at
+# least one chat pod running.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: backend
+  namespace: orbitops
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: backend

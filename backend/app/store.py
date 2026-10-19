@@ -202,6 +202,9 @@ def init_db(retries: int = 30, delay: float = 2.0) -> None:
                         conn.execute(statement)
                 _add_column_if_missing(conn, "threads", "user_id",
                                        "BIGINT" if conn.mysql else "INTEGER")
+                if conn.mysql:
+                    _add_foreign_key_if_missing(conn, "threads", "fk_threads_user", "user_id")
+                    _add_foreign_key_if_missing(conn, "sessions", "fk_sessions_user", "user_id")
             return
         except Exception:
             if attempt == retries - 1:
@@ -218,6 +221,23 @@ def _add_column_if_missing(conn, table: str, column: str, sql_type: str) -> None
         names = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
     if column not in names:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}")
+
+
+def _add_foreign_key_if_missing(conn, table: str, name: str, column: str) -> None:
+    """MySQL only: tie a user_id column to users.id, so the database itself
+    refuses a chat or session that points at an account that doesn't exist.
+    Added here rather than in CREATE TABLE so older databases get it too."""
+    row = conn.execute(
+        "SELECT CONSTRAINT_NAME FROM information_schema.TABLE_CONSTRAINTS "
+        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND CONSTRAINT_NAME = ?",
+        (table, name)).fetchone()
+    if row is None:
+        try:
+            conn.execute(f"ALTER TABLE {table} ADD CONSTRAINT {name} "
+                         f"FOREIGN KEY ({column}) REFERENCES users (id)")
+        except Exception:
+            # Another replica added it at the same moment.
+            pass
 
 
 def _now() -> str:

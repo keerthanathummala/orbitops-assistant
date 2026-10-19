@@ -1,5 +1,6 @@
 # The only public entry point: a GCP external load balancer in front of the
-# nginx pods, which serve the React app and proxy /api to the backend Service.
+# nginx pods, which serve the React app and route /api to the services:
+# /api/auth and /api/admin -> auth, /api/ops -> ops, everything else -> backend.
 apiVersion: v1
 kind: Service
 metadata:
@@ -37,6 +38,12 @@ spec:
       labels:
         app: frontend
     spec:
+      automountServiceAccountToken: false
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector: { matchLabels: { app: frontend } }
       containers:
         - name: frontend
           image: australia-southeast1-docker.pkg.dev/PROJECT_ID/orbitops/frontend:v1
@@ -48,3 +55,14 @@ spec:
           readinessProbe:
             httpGet: { path: /, port: 80 }
             periodSeconds: 10
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: frontend
+  namespace: orbitops
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: frontend

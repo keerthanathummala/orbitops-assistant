@@ -1,0 +1,69 @@
+# Ops service: the AIOps features -- cluster questions from the chat and the
+# one-click health check (backend/app/ops_service.py). The only pods that
+# can read the cluster (service account from 22-rbac.yaml). One replica is
+# enough: if it is down, chat keeps working and cluster questions are
+# answered from the runbooks instead.
+apiVersion: v1
+kind: Service
+metadata:
+  name: ops
+  namespace: orbitops
+spec:
+  selector:
+    app: ops
+  ports:
+    - port: 8000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ops
+  namespace: orbitops
+spec:
+  replicas: 1
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: ops
+  template:
+    metadata:
+      labels:
+        app: ops
+    spec:
+      serviceAccountName: orbitops-ops
+      containers:
+        - name: ops
+          image: australia-southeast1-docker.pkg.dev/PROJECT_ID/orbitops/backend:v1
+          command: ["python", "-m", "uvicorn", "app.ops_service:app", "--host", "0.0.0.0", "--port", "8000"]
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef: { name: orbitops-config }
+          env:
+            - name: APP_VERSION
+              value: v1
+            - name: POD_NAMESPACE
+              valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
+            - name: MYSQL_PASSWORD
+              valueFrom: { secretKeyRef: { name: orbitops-secrets, key: MYSQL_PASSWORD } }
+            - name: GEMINI_API_KEY
+              valueFrom: { secretKeyRef: { name: orbitops-secrets, key: GEMINI_API_KEY } }
+          resources:
+            # Loads the embedding model to search the runbooks.
+            requests: { cpu: 100m, memory: 768Mi }
+            limits: { cpu: "1", memory: 1536Mi }
+          startupProbe:
+            httpGet: { path: /api/health, port: 8000 }
+            periodSeconds: 5
+            failureThreshold: 36
+          readinessProbe:
+            httpGet: { path: /api/ready, port: 8000 }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /api/health, port: 8000 }
+            periodSeconds: 20
