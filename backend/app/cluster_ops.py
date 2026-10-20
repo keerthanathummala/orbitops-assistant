@@ -36,7 +36,7 @@ from typing import Dict, List, Optional
 from . import llm
 
 NAMESPACE = os.environ.get("POD_NAMESPACE", "orbitops")
-APPS = ["frontend", "backend", "mysql", "chroma", "redis"]
+APPS = ["frontend", "backend", "auth", "ops", "mysql", "chroma", "redis"]
 EVENT_WINDOW_MINUTES = 30
 RESTART_WARN_THRESHOLD = 3
 LOG_LINES = 200
@@ -298,7 +298,7 @@ def wanted_log_app(query: str) -> Optional[str]:
     if not re.search(r"\b(logs?|errors?|exceptions?|stack ?traces?|5\d\d|restart\w*|crash\w*|fail\w*)\b", q):
         return None
     for app in APPS:
-        if app in q:
+        if re.search(rf"\b{app}\b", q):
             return app
     return "backend"
 

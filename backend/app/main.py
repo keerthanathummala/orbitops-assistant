@@ -1,11 +1,16 @@
 """
-FastAPI app wiring together: accounts (auth.py), dispatcher (RAG + Agent),
-chat history, document upload (10/session max), the admin page and the
-AIOps health check — everything the frontend talks to.
+The chat service: chat (dispatcher: RAG + Agent), chat history and
+document upload (10/session max) -- the part of the app that does the heavy
+lifting and scales out under load.
+
+Accounts/admin (auth_api.py) and the AIOps features (ops_api.py) run as
+their own services on Kubernetes. When AUTH_SERVICE_URL / OPS_SERVICE_URL
+aren't set (running locally with one uvicorn), this app mounts those
+routers itself so a single process still serves everything.
 
 Security/safety measures (see guardrails.py, rate_limit.py for the "why"):
   - Prompt-injection + input-sanity guardrail on every chat message (RAG path
-    included — it previously had none).
+    included).
   - Faithfulness/anti-hallucination check on both pipelines' answers.
   - Sign-in required for everything except the health probes; each thread
     is only readable by the account that created it.
@@ -23,168 +28,70 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Optional
+from typing import List, Optional
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from . import auth
+from . import common
 from . import store
 from . import dispatcher
 from . import rag_core
 from . import google_search
 from . import file_extract
 from . import guardrails
-from . import cluster_ops
 from . import llm
 from .rate_limit import check_rate_limit
 
 app = FastAPI(title="OrbitOps Assistant API")
+common.add_cors(app)
+common.add_probes(app, "chat")
 
-# CORS: default to local dev origins only. Set FRONTEND_ORIGINS (comma-
-# separated) to your deployed frontend's real origin before going live —
-# "*" lets any website's JavaScript call this API using a visitor's browser.
-_origins_env = os.environ.get("FRONTEND_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
-ALLOWED_ORIGINS = [o.strip() for o in _origins_env.split(",") if o.strip()]
+# Separate services on Kubernetes; mounted here when running as one process.
+SPLIT_AUTH = bool(os.environ.get("AUTH_SERVICE_URL"))
+SPLIT_OPS = bool(os.environ.get("OPS_SERVICE_URL"))
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    allow_methods=["GET", "POST", "DELETE"],
-    allow_headers=["Content-Type", "Authorization"],
-)
+if not SPLIT_AUTH:
+    from . import auth_api
+    auth_api.on_threads_deleted = lambda thread_ids: [rag_core.drop_session(t) for t in thread_ids]
+    app.include_router(auth_api.router)
 
-APP_VERSION = os.environ.get("APP_VERSION", "dev")
+if not SPLIT_OPS:
+    from . import ops_api
+    app.include_router(ops_api.router)
 
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5MB — generous for text/docx/pdf notes, not for abuse
 CHAT_RATE_LIMIT = (20, 60)      # 20 messages / 60s per thread
 UPLOAD_RATE_LIMIT = (10, 60)    # 10 uploads / 60s per thread
-HEALTH_CHECK_RATE_LIMIT = (6, 60)  # each check reads the cluster + calls the LLM
-AUTH_RATE_LIMIT = (10, 60)      # sign-in/sign-up attempts per IP, slows password guessing
 
 
 @app.on_event("startup")
 def startup():
     store.init_db()
-    auth.ensure_admin_from_env()
+    if not SPLIT_AUTH:
+        auth.ensure_admin_from_env()
+    rag_core.warm_up()
 
 
-def _require_valid_thread_id(thread_id: str) -> None:
-    if not guardrails.is_valid_thread_id(thread_id):
-        raise HTTPException(400, "Invalid thread_id.")
-
-
-def _require_own_thread(thread_id: str, user: dict) -> None:
-    """A thread id that exists must belong to this user. 404 rather than 403
-    so other people's thread ids can't be confirmed by probing."""
-    _require_valid_thread_id(thread_id)
-    exists, owner = store.thread_owner(thread_id)
-    if exists and owner != user["id"]:
-        raise HTTPException(404, "Chat not found.")
+_require_own_thread = common.require_own_thread
 
 
 # ---------------------------------------------------------------------------
-# Accounts
+# Internal: called by the auth service when the admin deletes an account.
+# Not reachable from outside the cluster (nginx only proxies /api/).
 # ---------------------------------------------------------------------------
 
-class Credentials(BaseModel):
-    username: str = Field(..., max_length=64)
-    password: str = Field(..., max_length=auth.MAX_PASSWORD_LENGTH + 1)
+class DropThreads(BaseModel):
+    thread_ids: List[str]
 
 
-def _auth_rate_limit(request: Request) -> None:
-    if not check_rate_limit(f"auth:{auth.client_ip(request)}", *AUTH_RATE_LIMIT):
-        raise HTTPException(429, "Too many attempts. Wait a minute and try again.")
-
-
-@app.post("/api/auth/signup")
-def signup(creds: Credentials, request: Request):
-    _auth_rate_limit(request)
-    username = creds.username.strip()
-    auth.validate_credentials(username, creds.password)
-    if store.get_user_by_username(username) is not None:
-        raise HTTPException(409, "That username is taken.")
-    try:
-        user_id = store.create_user(username, auth.hash_password(creds.password))
-    except Exception:
-        raise HTTPException(409, "That username is taken.")
-    user = {"id": user_id, "username": username, "is_admin": 0}
-    return auth.start_session(user, request, "signup")
-
-
-@app.post("/api/auth/login")
-def login(creds: Credentials, request: Request):
-    _auth_rate_limit(request)
-    user = auth.authenticate(creds.username.strip(), creds.password)
-    if user is None:
-        raise HTTPException(401, "Wrong username or password.")
-    return auth.start_session(user, request, "login")
-
-
-@app.post("/api/auth/logout")
-def logout(request: Request, authorization: Optional[str] = Header(None),
-           user: dict = Depends(auth.current_user)):
-    auth.end_session(authorization)
-    store.log_access(user["id"], user["username"], "logout", auth.client_ip(request),
-                     request.headers.get("user-agent", ""))
-    return {"ok": True}
-
-
-@app.get("/api/auth/me")
-def me(user: dict = Depends(auth.current_user)):
-    return auth.public_user(user)
-
-
-# ---------------------------------------------------------------------------
-# Admin: who used the app, when and from where. Deliberately no access to
-# anyone's chats or uploaded documents.
-# ---------------------------------------------------------------------------
-
-@app.get("/api/admin/users")
-def admin_users(admin: dict = Depends(auth.admin_user)):
-    return store.list_users()
-
-
-@app.get("/api/admin/activity")
-def admin_activity(limit: int = 200, admin: dict = Depends(auth.admin_user)):
-    return store.list_access_log(max(1, min(limit, 1000)))
-
-
-@app.delete("/api/admin/users/{user_id}")
-def admin_delete_user(user_id: int, admin: dict = Depends(auth.admin_user)):
-    if user_id == admin["id"]:
-        raise HTTPException(400, "You can't delete your own admin account.")
-    users = {u["id"]: u for u in store.list_users()}
-    if user_id not in users:
-        raise HTTPException(404, "User not found.")
-    if users[user_id]["is_admin"]:
-        raise HTTPException(400, "Admin accounts are managed through ADMIN_USERNAME.")
-    for thread_id in store.delete_user(user_id):
-        rag_core.drop_session(thread_id)
-    return {"deleted": users[user_id]["username"]}
-
-
-# ---------------------------------------------------------------------------
-# Health checks (Kubernetes liveness/readiness probes)
-# ---------------------------------------------------------------------------
-
-@app.get("/api/health")
-def health():
-    """Liveness: the process is up and serving requests."""
-    return {"status": "ok", "version": APP_VERSION, "pod": os.environ.get("HOSTNAME", ""),
-            "llm": llm.status()}
-
-
-@app.get("/api/ready")
-def ready():
-    """Readiness: the database is reachable. A rolling update only sends
-    traffic to a new pod once this passes."""
-    try:
-        store.ping()
-    except Exception:
-        raise HTTPException(503, "database unavailable")
-    return {"status": "ready"}
+@app.post("/internal/threads/drop")
+def internal_drop_threads(req: DropThreads):
+    for thread_id in req.thread_ids:
+        if guardrails.is_valid_thread_id(thread_id):
+            rag_core.drop_session(thread_id)
+    return {"dropped": len(req.thread_ids)}
 
 
 # ---------------------------------------------------------------------------
@@ -314,44 +221,3 @@ def status(thread_id: str, user: dict = Depends(auth.current_user)):
     _require_own_thread(thread_id, user)
     docs_indexed = dispatcher.docs_indexed_count(thread_id)
     return {"docs_indexed": docs_indexed, "google_search": google_search.quota_status()}
-
-
-# ---------------------------------------------------------------------------
-# AIOps: one-click health check of the live deployment
-# ---------------------------------------------------------------------------
-
-@app.post("/api/ops/health-check")
-def ops_health_check(thread_id: str = Form(...), user: dict = Depends(auth.current_user)):
-    """Scans the app's Kubernetes namespace, flags problems with rule-based
-    checks and has the LLM write an incident summary. The result is also
-    saved into the chat so it stays in the conversation history."""
-    _require_own_thread(thread_id, user)
-    if not check_rate_limit(f"health:{thread_id}", *HEALTH_CHECK_RATE_LIMIT):
-        raise HTTPException(429, "Too many health checks — try again shortly.")
-
-    session = rag_core.get_or_create_session(thread_id)
-    try:
-        result = cluster_ops.health_check(rag_session=session)
-    except Exception as e:
-        if llm.is_quota_error(e):
-            raise HTTPException(429, llm.QUOTA_MESSAGE)
-        raise
-
-    label = {"healthy": "Healthy", "warning": "Warning", "critical": "Critical",
-             "unavailable": "Unavailable"}[result["status"]]
-    lines = [f"Health check: {label}", ""]
-    for issue in result["issues"]:
-        lines.append(f"[{issue['severity'].upper()}] {issue['object']}: {issue['problem']}")
-    if result["issues"]:
-        lines.append("")
-    lines.append(result["summary"])
-    text = "\n".join(lines)
-
-    store.ensure_thread(thread_id, title_hint="Cluster health check", user_id=user["id"])
-    store.add_message(thread_id, "user", "Run a cluster health check")
-    store.add_message(thread_id, "assistant", text, source="ops",
-                      citations=json.dumps(result["citations"]) if result["citations"] else None)
-    store.set_title_from_first_message(thread_id, "Cluster health check")
-
-    return {"thread_id": thread_id, "status": result["status"], "issues": result["issues"],
-            "text": text, "citations": result["citations"]}

@@ -133,9 +133,17 @@ def end_session(authorization: Optional[str]) -> None:
 def ensure_admin_from_env() -> None:
     username = os.environ.get("ADMIN_USERNAME", "").strip()
     password = os.environ.get("ADMIN_PASSWORD", "")
+    # Printed at startup so a missing or invalid admin setting is visible in
+    # the backend window / pod logs instead of only as a failed sign-in.
     if not username or not password:
+        print("Admin account: not configured (set ADMIN_USERNAME and ADMIN_PASSWORD).", flush=True)
         return
-    validate_credentials(username, password)
+    try:
+        validate_credentials(username, password)
+    except HTTPException as e:
+        print(f"Admin account: not created. {e.detail}", flush=True)
+        return
+    print(f"Admin account: '{username}' is ready.", flush=True)
     try:
         store.upsert_admin(username, hash_password(password))
     except Exception:

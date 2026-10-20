@@ -12,3 +12,8 @@ data:
   REDIS_URL: redis://redis:6379/0
   CHROMA_HOST: chroma
   CHROMA_PORT: "8000"
+  # Where the chat service finds the other two services. Unset when
+  # running locally, where one process serves everything.
+  AUTH_SERVICE_URL: http://auth:8000
+  OPS_SERVICE_URL: http://ops:8000
+  CHAT_SERVICE_URL: http://backend:8000

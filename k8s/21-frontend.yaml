@@ -1,5 +1,6 @@
 # The only public entry point: a GCP external load balancer in front of the
-# nginx pods, which serve the React app and proxy /api to the backend Service.
+# nginx pods, which serve the React app and route /api to the services:
+# /api/auth and /api/admin -> auth, /api/ops -> ops, everything else -> backend.
 apiVersion: v1
 kind: Service
 metadata:
@@ -37,14 +38,48 @@ spec:
       labels:
         app: frontend
     spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 40
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector: { matchLabels: { app: frontend } }
       containers:
         - name: frontend
           image: australia-southeast1-docker.pkg.dev/PROJECT_ID/orbitops/frontend:v1
+          env:
+            # nginx resolves these itself at request time, without the pod's
+            # DNS search list, so they must be full Service names.
+            - name: AUTH_UPSTREAM
+              value: auth.orbitops.svc.cluster.local:8000
+            - name: OPS_UPSTREAM
+              value: ops.orbitops.svc.cluster.local:8000
+            - name: CHAT_UPSTREAM
+              value: backend.orbitops.svc.cluster.local:8000
           ports:
             - containerPort: 80
           resources:
             requests: { cpu: 50m, memory: 64Mi }
             limits: { memory: 128Mi }
+          lifecycle:
+            # With externalTrafficPolicy: Local the Google load balancer only
+            # stops sending to a node once its health check fails, which takes
+            # a few seconds. Keep serving that long when a pod is stopped (a
+            # drain, rollout or scale-down) so no requests hit a closed port.
+            preStop:
+              exec: { command: ["sleep", "20"] }
           readinessProbe:
             httpGet: { path: /, port: 80 }
             periodSeconds: 10
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: frontend
+  namespace: orbitops
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: frontend

@@ -1,4 +1,5 @@
 # Horizontal Pod Autoscalers: add pods when average CPU passes 60-70%.
+# The ops service stays at one replica (see 24-ops.yaml).
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
@@ -27,6 +28,24 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: frontend
+  minReplicas: 2
+  maxReplicas: 4
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 70 }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: auth
+  namespace: orbitops
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: auth
   minReplicas: 2
   maxReplicas: 4
   metrics:

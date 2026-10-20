@@ -1,187 +1,146 @@
 # OrbitOps Assistant
 
-A single live chat app combining two COMP2701 assignments into one portfolio project:
+INFS3208 Cloud Computing individual project (Type I: scalable web
+application), by Keerthana Thummala.
 
-- **RAG pipeline** (Assessment 1): BM25 + dense embeddings + ChromaDB, fused with
-  Reciprocal Rank Fusion, answering questions grounded in your OrbitOps docs —
-  plus up to 10 uploaded documents per chat, indexed on top of the base corpus.
-- **Domain Intelligence Agent** (Assessment 2): a LangGraph agent that calls the
-  real GitHub and HackerNews APIs (plus optional Google Custom Search), with a
-  regex guardrail against prompt injection and an LLM-as-judge eval suite.
+OrbitOps Assistant is a chat assistant for a platform operations team,
+deployed as microservices on Google Kubernetes Engine. It answers questions
+from the team's runbooks, researches GitHub and HackerNews, and watches the
+cluster it runs on: it can explain a failing pod from live events and logs,
+or run a one-click health check that writes an incident summary with next
+steps. Users sign in with their own accounts, and an admin page shows who
+used the app, when and from where.
 
-Both run as their own pipeline, joined by a thin keyword-first dispatcher — not
-one merged graph — so each half stays independently testable. Everything is
-free/open-source: the LLM is `qwen2.5:7b` running locally via Ollama, no paid
-API required.
+## Prior work and what is new for INFS3208
 
-## Fixes made while combining them
+The chat app this project starts from is my own earlier work, built for
+COMP2701 (a document Q&A pipeline and a research agent, joined in one
+local chat app). It is reused here as the workload the cloud system runs,
+and is disclosed so the marking is clear about what was done for this
+course. The git history shows the split: everything after commit `a58e69b`
+was written for INFS3208.
 
-- **Agent empty-results bug** (flagged in the original eval report — ADV3, E1,
-  E2 all returned a 0-word response): `fetch_node` was setting
-  `current_node='end'` on *any* empty result, which made `route_after_fetch`'s
-  very first check intercept it before the retry/explain logic ever ran. Fixed
-  by using a neutral marker so retries (up to 3 attempts) and a proper
-  "no results found" message actually get a chance to run.
-- **Multi-turn memory gap**: `run_agent()` always built a brand-new initial
-  state and never read back the LangGraph checkpoint, so despite `MemorySaver`
-  being wired up, no node ever saw a previous turn. Fixed by loading prior
-  state via `get_state()` and carrying forward `chat_history` across calls on
-  the same `thread_id`.
-- **Chroma metadata bug** (found while adding document uploads): Chroma
-  rejects `None` metadata values, which an uploaded doc with no header fields
-  would produce. Fixed by coercing `None` → `""` before indexing.
+| Reused from COMP2701 (the starting point) | Built for INFS3208 |
+|---|---|
+| RAG pipeline: BM25 + MiniLM embeddings + Chroma, fused with Reciprocal Rank Fusion (`rag_core.py`) | Containerised services (`backend/Dockerfile`, `frontend/Dockerfile`) and `docker-compose.yml` |
+| LangGraph research agent with GitHub, HackerNews and Google tools (`agent_core.py`) | Kubernetes manifests for GKE (`k8s/`): Deployments, StatefulSets with persistent disks, Services, a public load balancer, HPAs, disruption budgets, RBAC |
+| Keyword dispatcher, guardrails, document upload, React chat UI | Split into four services: frontend, chat, auth and ops, routed by nginx |
+| Single process, SQLite and on-disk Chroma, local Ollama model | Stateless replicas: shared MySQL, Chroma over HTTP and Redis rate limits, so any pod can serve any request |
+| | Hosted Gemini API behind a provider switch (`llm.py`), with a clear message when the shared quota runs out |
+| | AIOps: cluster questions, log explainer and health check (`cluster_ops.py`), reading the cluster through a read-only service account |
+| | User accounts, sessions and the admin page (`auth.py`, `auth_api.py`) |
+| | A runbook corpus for the platform (OO-001 to OO-012), uploads that can be removed, Markdown answers, light and dark theme |
+| | Health and readiness probes, startup warm-up, rolling updates and rollback, node-failure handling, `commands.sh` |
 
-## Safety and security
+## Architecture
 
-Added once the plan became "multiple strangers will reach this over the
-internet," not just "my own dev machine":
+```
+Browser ─> GCP load balancer ─> frontend (nginx + React)      2-4 pods
+                                  ├ /api/auth, /api/admin ─> auth     2-4 pods   accounts, admin page
+                                  ├ /api/ops ──────────────> ops      1 pod      health check, reads the cluster
+                                  └ /api/* ────────────────> backend  2-5 pods   chat, history, uploads
+                                                                 └ cluster questions ─> ops
+            MySQL (accounts, chats, uploads) · Chroma (vectors) · Redis (rate limits)
+            Gemini API · GitHub / HackerNews APIs · Kubernetes API (ops only, read-only)
+```
 
-- **Prompt-injection guardrail on both pipelines, covering the broader known
-  attack categories** — not just one phrase. The Agent originally only
-  caught "ignore previous instructions"; the RAG path had no guardrail at
-  all. One shared guardrail (`guardrails.py`) now runs on both and detects:
-  persona switching ("you are now a...", "pretend to be..."), prompt
-  template extraction ("print your instructions"), ignoring the template,
-  conversation-history extraction, template augmentation/reset, fake
-  chat-turn injection (prefill/fake-completion attacks impersonating a
-  prior Assistant turn), output-format bypass attempts ("respond in
-  base64"), and obfuscated input (leetspeak like "1gn0re", and base64-
-  encoded instructions — both decoded/normalised before matching). Not
-  caught, because no regex reliably can: synonym-rephrased attacks ("ignore"
-  → "pay attention to" with no other signal) and a politely-worded request
-  exploiting the model's tendency to trust friendly phrasing. Those need
-  semantic judgment, not pattern matching — the actual backstop for them is
-  that both pipelines' prompts constrain the model to answer only from
-  supplied context/data, which limits what even a successful injection can
-  make it do.
-- **Anti-hallucination check on both pipelines' answers.** A lightweight
-  faithfulness heuristic (the same one from the A1 notebook's eval section)
-  checks whether the model's answer is actually grounded in the
-  retrieved/sourced material. If the overlap is too low, a visible notice is
-  appended rather than presenting the answer as fully verified. This is a
-  heuristic, not a guarantee — it catches obvious drift, not subtle errors.
-- **Accounts** (`auth.py`). Users sign up with a username and password
-  (stored as a salted scrypt hash). Sessions are random bearer tokens of
-  which only the sha256 is stored, valid for 7 days, shared by every
-  replica through the database. Every endpoint except the health probes
-  needs a session, and a chat can only be read or continued by the account
-  that created it. Sign-in attempts are rate-limited per IP.
-- **Admin page.** The account named by `ADMIN_USERNAME` / `ADMIN_PASSWORD`
-  sees every account (joined, last active, last IP, number of sign-ins) and
-  the sign-in history (time, IP address, browser), and can delete accounts
-  (their chats go with them; the history keeps the username). There is no
-  endpoint that lets the admin read anyone's chats or documents.
-- **`thread_id` validation.** Every endpoint requires the `thread_id` to be
-  a UUID this app would have generated, not an arbitrary client-supplied
-  string reaching a Chroma collection name or SQL rows.
-- **Rate limiting.** 20 chat messages / 60s and 10 uploads / 60s per thread
-  (`rate_limit.py`, in-memory). This exists because the backend runs one
-  shared Ollama worker and a global Google quota — without this, one user (or
-  one retry-happy script) can stall the whole app for everyone else.
-- **Upload size cap** (5MB) and file-type allowlist (`.txt`/`.md`/`.docx`/
-  `.pdf` only), enforced server-side regardless of what the frontend sends.
-- **CORS restricted** to configured origins (`FRONTEND_ORIGINS` env var,
-  defaults to localhost) instead of `*`.
+- **Microservices.** Four app services and three stateful ones, each with
+  its own Kubernetes Service. The chat, auth and ops services share one
+  image and one database but run as separate Deployments: a load spike on
+  chat can't stop people signing in, and only the ops pods can read the
+  cluster, so the pods that handle user prompts have no Kubernetes access.
+- **Load balancing.** A GCP external load balancer in front of the nginx
+  pods, and Kubernetes Services spreading requests over each service's
+  replicas. The footer shows which pod and version answered.
+- **Scaling.** HPAs on frontend, chat and auth (CPU target 60-70%), and the
+  GKE cluster autoscaler adds nodes (2 to 4) when pods don't fit.
+- **Self-healing and node failure.** Liveness, readiness and startup
+  probes; replicas spread over nodes; PodDisruptionBudgets keep at least one
+  pod of each service running when a node is drained.
+- **Rolling updates and rollback.** `maxUnavailable: 0`, so a new version
+  replaces pods one at a time with no downtime, and `rollout undo` goes back.
+- **Persistence.** MySQL and Chroma run as StatefulSets with persistent
+  disks, so accounts, chats and uploads survive pod restarts.
 
-What this does *not* cover: there is no email verification or password
-reset (the admin can delete an account so the person can sign up again),
-and the IP shown to the admin is the address the request came from, not a
-verified location. It also doesn't defend against a determined attacker
-with many IPs; that's out of scope for a student deployment.
+[DEPLOY.md](DEPLOY.md) has the full deployment guide and the 4-minute demo,
+and [`commands.sh`](commands.sh) has every gcloud and kubectl command with a
+comment on each.
 
-## Architecture decisions made for this project
+## Security
 
-- Document uploads are **added on top of** the base OrbitOps corpus, not a
-  replacement, capped at 10 per chat session.
-- Google Search quota (100/day, free tier) is **global**, not per-user — it's
-  tied to one API key. When exhausted, only the Google tool is disabled for
-  the rest of the day; RAG + GitHub/HackerNews keep working.
-- Each chat belongs to the signed-in account and is listed from the server,
-  so it follows the user to any browser. Chat history is persisted in MySQL
-  (SQLite locally), not just the in-memory LangGraph checkpointer, so it
-  survives restarts.
+- **Accounts.** Passwords are stored as salted scrypt hashes. A session is a
+  random bearer token of which only the sha256 is stored, valid for 7 days
+  and shared by every replica through the database. Everything except the
+  health probes needs a session, a chat can only be read by the account that
+  created it, and sign-in attempts are rate-limited per IP.
+- **Admin page.** The account set by `ADMIN_USERNAME` / `ADMIN_PASSWORD`
+  sees every account, sign-in times, IP addresses and browsers, and can
+  delete accounts. No endpoint lets the admin read anyone's chats.
+- **Least privilege on the cluster.** Only the ops service account can read
+  the namespace (`k8s/22-rbac.yaml`), and only read. The other pods don't
+  mount a service account token at all. The services' `/internal/` calls to
+  each other aren't reachable from outside: nginx only proxies `/api/`.
+- **Secrets.** API keys and passwords live in a Kubernetes Secret created
+  from a git-ignored file (`k8s/secrets.yaml`), never in the image or repo.
+- **Prompt-injection guardrail** on every chat message (persona switching,
+  prompt extraction, fake chat turns, obfuscated and base64 input), and a
+  faithfulness check that flags answers not grounded in their sources.
+- **Input limits.** `thread_id` must be a UUID, uploads are capped at 5MB
+  and to `.txt`/`.md`/`.docx`/`.pdf`, chat and uploads are rate-limited per
+  thread through Redis, and CORS is restricted to configured origins.
+
+Not covered: email verification and password reset, and the IP shown to
+the admin is where the request came from, not a verified location.
 
 ## Running locally
 
-### 1. Ollama (only if LLM_PROVIDER=ollama)
+The quickest full run is Docker Compose, which starts all seven services:
 
 ```bash
-curl -fsSL https://ollama.com/install.sh | sh
-ollama serve &
-ollama pull qwen2.5:7b
+cp backend/.env.example backend/.env   # set GEMINI_API_KEY and ADMIN_PASSWORD
+docker compose up --build
+# open http://localhost:8080
 ```
 
-### 2. Backend
+Without Docker, one backend process serves all three backend services
+(chat, auth and ops), with SQLite, an on-disk Chroma store and an in-memory
+rate limiter:
 
 ```bash
 cd backend
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-```
-
-The base corpus (12 OrbitOps runbooks and process docs, OO-001 to OO-012) is
-already in `backend/app/data/docs/`; the RAG pipeline indexes it at startup.
-
-Copy `.env.example` to `.env` and set `GEMINI_API_KEY` (free key from
-https://aistudio.google.com/apikey), or set `LLM_PROVIDER=ollama` to use the
-local Ollama model from step 1. Set `ADMIN_PASSWORD` (8+ characters) to get
-an admin account named `ADMIN_USERNAME`; sign in with it and click **Admin**
-under your name in the sidebar. Optionally fill in a free Google Custom
-Search API key + Search Engine ID; leave them blank to run with GitHub +
-HackerNews only.
-
-```bash
+cp .env.example .env                    # set GEMINI_API_KEY and ADMIN_PASSWORD
 uvicorn app.main:app --reload --port 8000 --env-file .env
-```
 
-If your frontend runs anywhere other than `localhost:5173`/`127.0.0.1:5173`
-(e.g. once deployed), set `FRONTEND_ORIGINS` to its real origin before
-starting uvicorn, comma-separated if there's more than one:
-
-```bash
-export FRONTEND_ORIGINS="https://your-deployed-frontend.example.com"
-```
-
-### 3. Frontend
-
-```bash
-cd frontend
+cd ../frontend
 npm install
-npm run dev
+npm run dev                             # open the printed localhost URL
 ```
 
-Open the printed `localhost` URL. Set `VITE_API_URL` in a `.env` file in
-`frontend/` if the backend isn't on `localhost:8000`.
+A free Gemini key comes from https://aistudio.google.com/apikey. Set
+`LLM_PROVIDER=ollama` to use a local Ollama model instead. Sign in with
+`ADMIN_USERNAME` / `ADMIN_PASSWORD` and click **Admin** under your name to
+open the admin page. Outside a cluster the AIOps features report that
+cluster access isn't configured, and cluster questions are answered from
+the runbooks.
 
-## AIOps: watching its own deployment
+## Repository layout
 
-Once deployed to Kubernetes, the assistant can also observe the cluster it
-runs in (`backend/app/cluster_ops.py`, read-only access via
-`k8s/22-rbac.yaml`):
-
-- **Cluster questions** in chat ("is anything failing?", "why did the backend
-  pod restart?") are answered from live pods, deployments, autoscalers and
-  warning events, with the relevant runbooks retrieved by the RAG pipeline.
-- **Log explainer**: questions about errors or logs pull recent pod logs and
-  group the errors into a likely cause.
-- **Run health check** button: rule-based checks (crash loops, OOM kills,
-  image pull failures, unready pods, stuck rollouts, autoscaler at max) plus
-  an LLM-written incident summary with next steps. Rules decide what counts
-  as a problem, so the check can't invent an incident.
-
-Outside a cluster these features report that cluster access isn't
-configured, and cluster-sounding questions fall back to the docs pipeline.
-
-## Deploying to the cloud
-
-The app is containerised (`backend/Dockerfile`, `frontend/Dockerfile`) and
-runs as microservices on Google Kubernetes Engine: React/nginx frontend,
-FastAPI backend, MySQL, Chroma and Redis, with the LLM served by the hosted
-Gemini API. Backend pods are stateless so they scale horizontally and
-support rolling updates and rollback. `docker compose up --build` runs the
-same stack locally. See [DEPLOY.md](DEPLOY.md) for the full steps.
-
-Local (non-Docker) runs still work as described above: without `MYSQL_HOST`,
-`CHROMA_HOST` or `REDIS_URL` the backend falls back to SQLite, an on-disk
-Chroma store and an in-memory rate limiter. Set `LLM_PROVIDER=ollama` to use
-the local Ollama model instead of Gemini.
+```
+backend/app/
+  main.py           chat service: chat, history, uploads
+  auth_service.py   auth service (routes in auth_api.py, logic in auth.py)
+  ops_service.py    ops service (routes in ops_api.py, logic in cluster_ops.py)
+  common.py         probes, CORS and ownership checks shared by the services
+  dispatcher.py     sends each message to docs, research, both, or ops
+  rag_core.py       document Q&A (reused, extended)
+  agent_core.py     research agent (reused, extended)
+  store.py          MySQL / SQLite: accounts, sessions, chats, uploads
+  llm.py            Gemini or Ollama
+  data/docs/        the runbook corpus, baked into the image
+frontend/           React app and nginx config
+k8s/                Kubernetes manifests, applied in file-name order
+commands.sh         every gcloud / kubectl command, commented
+DEPLOY.md           deployment guide and demo script
+```

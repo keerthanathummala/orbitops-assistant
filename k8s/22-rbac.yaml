@@ -1,10 +1,12 @@
-# AIOps: lets the backend read (never change) the state of its own namespace
-# -- pods, logs, events, deployments, autoscalers -- for the cluster tools
-# and the health check (backend/app/cluster_ops.py).
+# AIOps: lets the ops service read (never change) the state of its own
+# namespace -- pods, logs, events, deployments, autoscalers -- for the
+# cluster questions and the health check (backend/app/cluster_ops.py).
+# Only the ops pods run under this account (24-ops.yaml); the chat, auth
+# and frontend pods have no Kubernetes API access.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: orbitops-backend
+  name: orbitops-ops
   namespace: orbitops
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -26,11 +28,11 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: orbitops-backend-observer
+  name: orbitops-ops-observer
   namespace: orbitops
 subjects:
   - kind: ServiceAccount
-    name: orbitops-backend
+    name: orbitops-ops
     namespace: orbitops
 roleRef:
   apiGroup: rbac.authorization.k8s.io

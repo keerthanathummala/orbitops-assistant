@@ -13,19 +13,32 @@ services:
       MYSQL_PASSWORD: orbitops
     volumes:
       - mysql-data:/var/lib/mysql
+    # The first start initialises the database and can take a minute or
+    # more; the app services wait for this check instead of timing out.
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -prootpass --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
 
   redis:
     image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 12
 
   chroma:
     image: chromadb/chroma:1.5.9
     volumes:
       - chroma-data:/data
 
+  # The three backend services share one image and one environment; only
+  # the command differs (see README "Architecture").
   backend:
     build: ./backend
     env_file: ./backend/.env
-    environment:
+    environment: &backend-env
       MYSQL_HOST: mysql
       MYSQL_USER: orbitops
       MYSQL_PASSWORD: orbitops
@@ -33,16 +46,42 @@ services:
       REDIS_URL: redis://redis:6379/0
       CHROMA_HOST: chroma
       CHROMA_PORT: "8000"
+      AUTH_SERVICE_URL: http://auth:8000
+      OPS_SERVICE_URL: http://ops:8000
+      CHAT_SERVICE_URL: http://backend:8000
       APP_VERSION: local
-    depends_on: [mysql, redis, chroma]
+    depends_on: &backend-deps
+      mysql: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      chroma: { condition: service_started }
+    restart: unless-stopped
     deploy:
       replicas: 2
+
+  auth:
+    build: ./backend
+    command: ["python", "-m", "uvicorn", "app.auth_service:app", "--host", "0.0.0.0", "--port", "8000"]
+    env_file: ./backend/.env
+    environment: *backend-env
+    depends_on: *backend-deps
+    restart: unless-stopped
+
+  # No cluster here, so cluster questions are answered from the runbooks and
+  # the health check reports "Unavailable", as when running without Docker.
+  ops:
+    build: ./backend
+    command: ["python", "-m", "uvicorn", "app.ops_service:app", "--host", "0.0.0.0", "--port", "8000"]
+    env_file: ./backend/.env
+    environment: *backend-env
+    depends_on: *backend-deps
+    restart: unless-stopped
 
   frontend:
     build: ./frontend
     ports:
       - "8080:80"
-    depends_on: [backend]
+    depends_on: [backend, auth, ops]
+    restart: unless-stopped
 
 volumes:
   mysql-data:
