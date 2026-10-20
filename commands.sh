@@ -160,7 +160,9 @@ demo-node-failure)
 demo-update)
   # Rolling update: deploy v2 of the chat service. Pods are replaced one at a
   # time (maxUnavailable 0), so there is no downtime; the footer shows v2.
-  sed "s/PROJECT_ID/$PROJECT_ID/g; s#backend:v1#backend:v2#; s#value: v1#value: v2#" k8s/20-backend.yaml | kubectl apply -f -
+  # A patch changes only the image and version, in one rollout; re-applying
+  # the manifest would also reset the replica count the autoscaler has set.
+  kubectl -n $NS patch deploy/backend -p "{\"spec\":{\"template\":{\"spec\":{\"containers\":[{\"name\":\"backend\",\"image\":\"$REG/backend:v2\",\"env\":[{\"name\":\"APP_VERSION\",\"value\":\"v2\"}]}]}}}}"
   # Follow the rollout until every pod runs v2.
   kubectl -n $NS rollout status deploy/backend
   ;;
