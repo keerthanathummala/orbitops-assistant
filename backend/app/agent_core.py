@@ -17,7 +17,8 @@ Fixes/changes relative to the original version:
    memory was never actually used by any node. Fixed by reading back the
    graph's own checkpoint via get_state() and carrying forward a running
    chat_history, which fetch_node/analyse_node can use for follow-up
-   context in the same thread_id.
+   context in the same thread_id. The history now comes from the chat
+   database instead, and the graph has no checkpointer (see run_agent).
 
 3. Performance: the original pipeline made 3 sequential Ollama calls per
    turn (keyword extraction -> synthesis -> response formatting), each
@@ -43,7 +44,6 @@ import httpx
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 from langgraph.graph import StateGraph, START, END
-from langgraph.checkpoint.memory import MemorySaver
 
 from . import google_search
 from . import guardrails
@@ -432,7 +432,10 @@ def build_agent_graph():
     builder.add_edge("analyse_node", END)
     builder.add_edge("respond_empty_node", END)
 
-    return builder.compile(checkpointer=MemorySaver())
+    # No checkpointer: the history comes from the chat database, and a
+    # MemorySaver kept every step of every chat in memory and carried each
+    # turn's errors into the next one.
+    return builder.compile()
 
 
 _agent = None
@@ -450,13 +453,12 @@ def run_agent(query: str, thread_id: str = "run-1") -> dict:
     earlier turns instead of always building a fresh initial state (which is
     what the original version did despite having MemorySaver wired up).
 
-    The history is now read from the shared chat database (store.py) rather
-    than the graph's in-memory MemorySaver checkpoint. Once the backend runs
-    as several replicas behind a load balancer, consecutive turns of one chat
-    can land on different pods, and a pod's MemorySaver only knows the turns
-    that pod handled itself."""
+    The history is read from the shared chat database (store.py), and the
+    graph keeps no state between turns. Once the backend runs as several
+    replicas behind a load balancer, consecutive turns of one chat can land
+    on different pods, and an in-memory checkpoint only knows the turns its
+    own pod handled."""
     agent = get_agent()
-    config = {"configurable": {"thread_id": thread_id}}
 
     prior_history = store.get_agent_history(thread_id)
 
@@ -472,7 +474,7 @@ def run_agent(query: str, thread_id: str = "run-1") -> dict:
         "analysis": "",
         "chat_history": prior_history,
     }
-    result = agent.invoke(initial, config=config)
+    result = agent.invoke(initial)
 
     # main.py persists this turn to the chat database, which is what the
     # next invocation on this thread_id (on any pod) reads back.
