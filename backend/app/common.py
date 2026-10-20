@@ -14,9 +14,11 @@ back from it independently.
 from __future__ import annotations
 
 import os
+import sqlite3
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from . import guardrails
 from . import llm
@@ -47,13 +49,37 @@ def add_probes(app: FastAPI, service: str) -> None:
 
     @app.get("/api/ready")
     def ready():
-        """Readiness: the database is reachable. A rolling update only sends
-        traffic to a new pod once this passes."""
-        try:
-            store.ping()
-        except Exception:
-            raise HTTPException(503, "database unavailable")
+        """Readiness: startup has finished (database schema created, models
+        loaded), which is all a rolling update needs to wait for. It
+        deliberately doesn't re-check MySQL: if MySQL restarts, every pod
+        failing readiness at once would take the whole API off the load
+        balancer. Pods stay in service and answer with a clear 503 instead
+        (see add_db_error_handler)."""
         return {"status": "ready", "service": service}
+
+    add_db_error_handler(app)
+
+
+def _db_errors() -> tuple:
+    errors = [sqlite3.OperationalError]
+    try:
+        import pymysql
+        errors += [pymysql.err.OperationalError, pymysql.err.InterfaceError]
+    except ImportError:
+        pass
+    return tuple(errors)
+
+
+def add_db_error_handler(app: FastAPI) -> None:
+    """While the database is unreachable (MySQL restarting or moving to
+    another node), answer with a 503 and a message the frontend can show,
+    rather than an unexplained 500."""
+    async def handler(request: Request, exc: Exception):
+        return JSONResponse(status_code=503, content={
+            "detail": "The database is unavailable for a moment. Please try again shortly."})
+
+    for error in _db_errors():
+        app.add_exception_handler(error, handler)
 
 
 def require_valid_thread_id(thread_id: str) -> None:
