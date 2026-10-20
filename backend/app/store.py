@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -162,19 +163,45 @@ class _Conn:
         return self.raw.execute(sql, params)
 
 
+# MySQL connections are reused per worker thread instead of opened for every
+# query: FastAPI runs requests on a fixed thread pool, so this is a small
+# pool in practice.
+_local = threading.local()
+
+# A hung or unreachable database fails a query after this long instead of
+# tying the worker up indefinitely (the caller then gets a 503, see common.py).
+MYSQL_CONNECT_TIMEOUT = 5
+MYSQL_QUERY_TIMEOUT = 15
+
+
+def _connect_mysql():
+    import pymysql
+    raw = getattr(_local, "mysql", None)
+    if raw is not None:
+        try:
+            raw.ping(reconnect=True)  # reopens it if MySQL restarted meanwhile
+            return raw
+        except Exception:
+            _local.mysql = None
+    raw = pymysql.connect(
+        host=MYSQL_HOST,
+        port=int(os.environ.get("MYSQL_PORT", "3306")),
+        user=os.environ.get("MYSQL_USER", "orbitops"),
+        password=os.environ.get("MYSQL_PASSWORD", ""),
+        database=os.environ.get("MYSQL_DATABASE", "orbitops"),
+        charset="utf8mb4",
+        cursorclass=pymysql.cursors.DictCursor,
+        connect_timeout=MYSQL_CONNECT_TIMEOUT,
+        read_timeout=MYSQL_QUERY_TIMEOUT,
+        write_timeout=MYSQL_QUERY_TIMEOUT,
+    )
+    _local.mysql = raw
+    return raw
+
+
 def _connect():
     if MYSQL_HOST:
-        import pymysql
-        raw = pymysql.connect(
-            host=MYSQL_HOST,
-            port=int(os.environ.get("MYSQL_PORT", "3306")),
-            user=os.environ.get("MYSQL_USER", "orbitops"),
-            password=os.environ.get("MYSQL_PASSWORD", ""),
-            database=os.environ.get("MYSQL_DATABASE", "orbitops"),
-            charset="utf8mb4",
-            cursorclass=pymysql.cursors.DictCursor,
-        )
-        return _Conn(raw, mysql=True)
+        return _Conn(_connect_mysql(), mysql=True)
     raw = sqlite3.connect(DB_PATH)
     raw.row_factory = sqlite3.Row
     return _Conn(raw, mysql=False)
@@ -186,8 +213,15 @@ def _conn():
     try:
         yield conn
         conn.raw.commit()
+    except BaseException:
+        try:
+            conn.raw.rollback()
+        except Exception:
+            _local.mysql = None  # broken connection: open a fresh one next time
+        raise
     finally:
-        conn.raw.close()
+        if not conn.mysql:
+            conn.raw.close()
 
 
 def init_db(retries: int = 30, delay: float = 2.0) -> None:
@@ -307,23 +341,21 @@ def get_messages(thread_id: str) -> List[dict]:
 def list_threads(user_id: int) -> List[dict]:
     """The signed-in user's own threads, most recently active first."""
     with _conn() as conn:
+        # One query: each thread with its latest user message, if any.
         rows = conn.execute(
-            "SELECT thread_id, title, created_at FROM threads WHERE user_id = ?", (user_id,)
+            "SELECT t.thread_id, t.title, t.created_at, m.content AS last_content, "
+            "m.created_at AS last_created_at FROM threads t "
+            "LEFT JOIN messages m ON m.id = (SELECT MAX(id) FROM messages "
+            "WHERE thread_id = t.thread_id AND role = 'user') "
+            "WHERE t.user_id = ?", (user_id,)
         ).fetchall()
-        threads = {r["thread_id"]: dict(r) for r in rows}
-        thread_ids = list(threads)
-
-        for tid in thread_ids:
-            last = conn.execute(
-                "SELECT content, created_at FROM messages WHERE thread_id = ? AND role = 'user' "
-                "ORDER BY id DESC LIMIT 1",
-                (tid,),
-            ).fetchone()
-            if tid in threads and last:
-                threads[tid]["preview"] = last["content"][:80]
-                threads[tid]["last_at"] = last["created_at"]
-
-        ordered = [threads[tid] for tid in thread_ids if tid in threads]
+        ordered = []
+        for r in rows:
+            thread = {"thread_id": r["thread_id"], "title": r["title"], "created_at": r["created_at"]}
+            if r["last_content"] is not None:
+                thread["preview"] = r["last_content"][:80]
+                thread["last_at"] = r["last_created_at"]
+            ordered.append(thread)
         ordered.sort(key=lambda t: t.get("last_at", t["created_at"]), reverse=True)
         return ordered
 
