@@ -47,6 +47,15 @@ spec:
       containers:
         - name: frontend
           image: australia-southeast1-docker.pkg.dev/PROJECT_ID/orbitops/frontend:v1
+          env:
+            # nginx resolves these itself at request time, without the pod's
+            # DNS search list, so they must be full Service names.
+            - name: AUTH_UPSTREAM
+              value: auth.orbitops.svc.cluster.local:8000
+            - name: OPS_UPSTREAM
+              value: ops.orbitops.svc.cluster.local:8000
+            - name: CHAT_UPSTREAM
+              value: backend.orbitops.svc.cluster.local:8000
           ports:
             - containerPort: 80
           resources:
