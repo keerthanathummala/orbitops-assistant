@@ -7,6 +7,7 @@ data:
   LLM_PROVIDER: gemini
   GEMINI_MODEL: gemini-3.5-flash
   GEMINI_THINKING_LEVEL: low
+  GEMINI_FALLBACK_MODEL: gemini-3.1-flash-lite
   MYSQL_HOST: mysql
   MYSQL_DATABASE: orbitops
   MYSQL_USER: orbitops
