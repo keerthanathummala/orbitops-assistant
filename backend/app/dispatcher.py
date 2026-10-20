@@ -62,7 +62,7 @@ def ops_answer(thread_id: str, query: str) -> Optional[dict]:
         return cluster_ops.ops_answer(query, rag_session=rag_core.get_or_create_session(thread_id))
     try:
         r = httpx.post(f"{OPS_SERVICE_URL}/internal/ops/answer",
-                       json={"thread_id": thread_id, "query": query}, timeout=110)
+                       json={"thread_id": thread_id, "query": query}, timeout=150)
     except httpx.TransportError:
         _ops_available = (time.monotonic(), False)
         return None

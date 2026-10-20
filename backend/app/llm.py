@@ -35,6 +35,13 @@ OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 # explicit limit, Ollama's own default (~128 tokens) cut longer answers off.
 MAX_OUTPUT_TOKENS = 4096
 
+# Every answer has to fit inside nginx's 180 s proxy timeout (frontend/
+# nginx.conf), and the agent and "docs + web" routes make two model calls.
+# Without these, the Gemini client waits indefinitely and retries a 429
+# several times, so the browser gives up while the backend is still working.
+LLM_TIMEOUT_SECONDS = 50
+LLM_MAX_RETRIES = 1
+
 _llms: Dict[float, object] = {}
 
 
@@ -42,14 +49,16 @@ def _build(temperature: float):
     if LLM_PROVIDER == "ollama":
         from langchain_ollama import ChatOllama
         return ChatOllama(model=OLLAMA_MODEL, base_url=OLLAMA_HOST,
-                          temperature=temperature, num_predict=MAX_OUTPUT_TOKENS)
+                          temperature=temperature, num_predict=MAX_OUTPUT_TOKENS,
+                          client_kwargs={"timeout": LLM_TIMEOUT_SECONDS})
 
     from langchain_google_genai import ChatGoogleGenerativeAI
     api_key = os.environ.get("GEMINI_API_KEY", "")
     if not api_key:
         raise RuntimeError("LLM_PROVIDER=gemini but GEMINI_API_KEY is not set.")
     return ChatGoogleGenerativeAI(model=GEMINI_MODEL, google_api_key=api_key,
-                                  temperature=temperature, max_output_tokens=MAX_OUTPUT_TOKENS)
+                                  temperature=temperature, max_output_tokens=MAX_OUTPUT_TOKENS,
+                                  timeout=LLM_TIMEOUT_SECONDS, max_retries=LLM_MAX_RETRIES)
 
 
 def status() -> dict:
