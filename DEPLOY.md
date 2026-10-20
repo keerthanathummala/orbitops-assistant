@@ -60,8 +60,8 @@ gcloud artifacts repositories create orbitops --repository-format=docker --locat
 # Cloud Build builds the images in GCP (no local Docker needed). The backend
 # image runs the chat, auth and ops services, each with its own start command.
 export REG=$REGION-docker.pkg.dev/$PROJECT_ID/orbitops
-gcloud builds submit backend  --tag $REG/backend:v1
-gcloud builds submit frontend --tag $REG/frontend:v1
+gcloud builds submit backend  --tag $REG/backend:v1  --timeout=30m
+gcloud builds submit frontend --tag $REG/frontend:v1 --timeout=15m
 # The same backend image tagged v2, ready for the rolling-update demo
 gcloud artifacts docker tags add $REG/backend:v1 $REG/backend:v2
 ```

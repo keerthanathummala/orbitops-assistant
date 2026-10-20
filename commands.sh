@@ -45,9 +45,12 @@ setup)
 build)
   # Build the backend image in Google Cloud and push it as v1. The chat, auth
   # and ops services all run this one image with different start commands.
-  gcloud builds submit backend --tag "$REG/backend:v1"
+  # backend/.gcloudignore keeps .env (your API keys) and local data out of the
+  # upload; the image is ~2 GB with torch, so allow more than the default
+  # 10-minute build time.
+  gcloud builds submit backend --tag "$REG/backend:v1" --timeout=30m
   # Build the frontend (React app served by nginx) and push it as v1.
-  gcloud builds submit frontend --tag "$REG/frontend:v1"
+  gcloud builds submit frontend --tag "$REG/frontend:v1" --timeout=15m
   # Push the same backend code as v2 now, so the rolling-update demo doesn't
   # have to wait for a build. The app shows its version in the footer.
   gcloud artifacts docker tags add "$REG/backend:v1" "$REG/backend:v2"
