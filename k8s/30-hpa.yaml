@@ -17,6 +17,11 @@ spec:
       resource:
         name: cpu
         target: { type: Utilization, averageUtilization: 60 }
+  # Back to 2 replicas about a minute after the load stops (the default waits
+  # 5 minutes), so the extra pods are gone before the node-failure demo.
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 60
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler

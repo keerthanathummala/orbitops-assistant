@@ -1,0 +1,13 @@
+# Files `gcloud builds submit backend` must not upload to Cloud Build's
+# storage bucket: secrets, local data and anything the image doesn't need.
+.gcloudignore
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+**/__pycache__/
+*.pyc
+app/chat_history.db
+app/chroma_store/
+app/google_quota_state.json

@@ -1,0 +1,7 @@
+# Files `gcloud builds submit frontend` must not upload: secrets, and the
+# dependencies and build output the Dockerfile recreates itself.
+.gcloudignore
+.env
+.env.*
+node_modules/
+dist/

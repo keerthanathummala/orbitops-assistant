@@ -20,7 +20,10 @@ ZONE="$REGION-a"
 REG="$REGION-docker.pkg.dev/$PROJECT_ID/orbitops"
 NS=orbitops
 
-cd "$(dirname "$0")"
+# Work from the repository root whatever folder this is run from; remember
+# the script's own full path for the help text below.
+SCRIPT="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+cd "$(dirname "$SCRIPT")"
 
 # The manifests say PROJECT_ID where the registry path goes; fill it in while
 # applying so the files in the repository stay unchanged.
@@ -45,9 +48,12 @@ setup)
 build)
   # Build the backend image in Google Cloud and push it as v1. The chat, auth
   # and ops services all run this one image with different start commands.
-  gcloud builds submit backend --tag "$REG/backend:v1"
+  # backend/.gcloudignore keeps .env (your API keys) and local data out of the
+  # upload; the image is ~2 GB with torch, so allow more than the default
+  # 10-minute build time.
+  gcloud builds submit backend --tag "$REG/backend:v1" --timeout=30m
   # Build the frontend (React app served by nginx) and push it as v1.
-  gcloud builds submit frontend --tag "$REG/frontend:v1"
+  gcloud builds submit frontend --tag "$REG/frontend:v1" --timeout=15m
   # Push the same backend code as v2 now, so the rolling-update demo doesn't
   # have to wait for a build. The app shows its version in the footer.
   gcloud artifacts docker tags add "$REG/backend:v1" "$REG/backend:v2"
@@ -91,7 +97,7 @@ status)
   kubectl -n $NS get deploy,sts,svc,pods -o wide
   # Current and target CPU and replica counts of the autoscalers.
   kubectl -n $NS get hpa
-  # Disruption budgets: how many pods of each service may be taken down at once.
+  # Disruption budgets (frontend, chat, auth): how many pods may be taken down at once.
   kubectl -n $NS get pdb
   ;;
 
@@ -123,7 +129,8 @@ demo-scale)
   ;;
 
 demo-scale-stop)
-  # Remove the load pods; the HPA scales back down after about 5 minutes.
+  # Remove the load pods; the HPA scales back down to 2 after about a minute
+  # (see 30-hpa.yaml), before the node-failure step.
   kubectl -n $NS delete deployment load
   ;;
 
@@ -132,15 +139,26 @@ demo-node-failure)
   # replica each, so draining their node restarts them elsewhere) ...
   MYSQL_NODE=$(kubectl -n $NS get pod mysql-0 -o jsonpath='{.spec.nodeName}')
   CHROMA_NODE=$(kubectl -n $NS get pod chroma-0 -o jsonpath='{.spec.nodeName}')
-  # ... and pick a node that runs a chat pod but neither of those.
+  # ... and pick a node that runs a chat pod but neither of those. When none
+  # does (likely on two nodes), grep finds nothing; "|| true" stops that
+  # ending the script under "set -e -o pipefail".
   NODE=$(kubectl -n $NS get pods -l app=backend -o jsonpath='{range .items[*]}{.spec.nodeName}{"\n"}{end}' \
-    | grep -v -e "$MYSQL_NODE" -e "$CHROMA_NODE" | head -1)
-  NODE=${NODE:-$(kubectl -n $NS get pods -l app=backend -o jsonpath='{.items[0].spec.nodeName}')}
+    | sort -u | grep -vxF -e "$MYSQL_NODE" -e "$CHROMA_NODE" | head -1 || true)
+  if [ -z "$NODE" ]; then
+    NODE=$(kubectl -n $NS get pods -l app=backend -o jsonpath='{.items[0].spec.nodeName}')
+    echo "Every chat pod shares a node with MySQL or Chroma, so this drain also restarts"
+    echo "them: sign-in and chat pause for about a minute while they move."
+  fi
   echo "Taking node $NODE out of service"
   # Mark the node unschedulable and evict its pods, as a node failure or GKE
-  # upgrade would. The disruption budgets keep at least one pod of each
-  # service running, so the app stays up while pods move to the other node.
-  kubectl drain "$NODE" --ignore-daemonsets --delete-emptydir-data
+  # upgrade would. The disruption budgets keep at least one frontend, chat
+  # and auth pod running, so the app stays up while pods move to the other
+  # node. (Ops, MySQL, Chroma and Redis have one pod each; any on this node
+  # restart elsewhere, which is why the step avoids MySQL's and Chroma's node.)
+  # Drain gives up after 2.5 minutes rather than holding up the demo if a
+  # replacement pod can't find room; the node is uncordoned either way.
+  kubectl drain "$NODE" --ignore-daemonsets --delete-emptydir-data --timeout=150s \
+    || echo "Drain didn't finish in time: some pods are still waiting for room on another node."
   # Every pod is now on the remaining node(s); the app still answers.
   kubectl -n $NS get pods -o wide
   # Bring the node back into service.
@@ -150,7 +168,9 @@ demo-node-failure)
 demo-update)
   # Rolling update: deploy v2 of the chat service. Pods are replaced one at a
   # time (maxUnavailable 0), so there is no downtime; the footer shows v2.
-  sed "s/PROJECT_ID/$PROJECT_ID/g; s#backend:v1#backend:v2#; s#value: v1#value: v2#" k8s/20-backend.yaml | kubectl apply -f -
+  # A patch changes only the image and version, in one rollout; re-applying
+  # the manifest would also reset the replica count the autoscaler has set.
+  kubectl -n $NS patch deploy/backend -p "{\"spec\":{\"template\":{\"spec\":{\"containers\":[{\"name\":\"backend\",\"image\":\"$REG/backend:v2\",\"env\":[{\"name\":\"APP_VERSION\",\"value\":\"v2\"}]}]}}}}"
   # Follow the rollout until every pod runs v2.
   kubectl -n $NS rollout status deploy/backend
   ;;
@@ -189,6 +209,6 @@ cleanup)
 
 *)
   # No or unknown step: show the list at the top of this file.
-  sed -n '2,14p' "$0"
+  sed -n '2,/^set /{/^#/p}' "$SCRIPT"
   ;;
 esac

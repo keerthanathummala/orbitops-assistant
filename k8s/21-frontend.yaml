@@ -60,7 +60,7 @@ spec:
           ports:
             - containerPort: 80
           resources:
-            requests: { cpu: 50m, memory: 64Mi }
+            requests: { cpu: 25m, memory: 64Mi }
             limits: { memory: 128Mi }
           lifecycle:
             # With externalTrafficPolicy: Local the Google load balancer only

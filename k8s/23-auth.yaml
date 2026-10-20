@@ -58,7 +58,7 @@ spec:
             - name: ADMIN_PASSWORD
               valueFrom: { secretKeyRef: { name: orbitops-secrets, key: ADMIN_PASSWORD, optional: true } }
           resources:
-            requests: { cpu: 100m, memory: 192Mi }
+            requests: { cpu: 50m, memory: 192Mi }
             limits: { cpu: 500m, memory: 384Mi }
           startupProbe:
             httpGet: { path: /api/health, port: 8000 }

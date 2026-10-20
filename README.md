@@ -56,7 +56,10 @@ Browser ─> GCP load balancer ─> frontend (nginx + React)      2-4 pods
   GKE cluster autoscaler adds nodes (2 to 4) when pods don't fit.
 - **Self-healing and node failure.** Liveness, readiness and startup
   probes; replicas spread over nodes; PodDisruptionBudgets keep at least one
-  pod of each service running when a node is drained.
+  frontend, chat and auth pod running when a node is drained. Ops, MySQL,
+  Chroma and Redis run a single pod each, so if their node is drained they
+  restart on another node and that part pauses for about a minute (cluster
+  questions fall back to the runbooks meanwhile).
 - **Rolling updates and rollback.** `maxUnavailable: 0`, so a new version
   replaces pods one at a time with no downtime, and `rollout undo` goes back.
 - **Persistence.** MySQL and Chroma run as StatefulSets with persistent
