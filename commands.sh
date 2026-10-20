@@ -132,10 +132,16 @@ demo-node-failure)
   # replica each, so draining their node restarts them elsewhere) ...
   MYSQL_NODE=$(kubectl -n $NS get pod mysql-0 -o jsonpath='{.spec.nodeName}')
   CHROMA_NODE=$(kubectl -n $NS get pod chroma-0 -o jsonpath='{.spec.nodeName}')
-  # ... and pick a node that runs a chat pod but neither of those.
+  # ... and pick a node that runs a chat pod but neither of those. When none
+  # does (likely on two nodes), grep finds nothing; "|| true" stops that
+  # ending the script under "set -e -o pipefail".
   NODE=$(kubectl -n $NS get pods -l app=backend -o jsonpath='{range .items[*]}{.spec.nodeName}{"\n"}{end}' \
-    | grep -v -e "$MYSQL_NODE" -e "$CHROMA_NODE" | head -1)
-  NODE=${NODE:-$(kubectl -n $NS get pods -l app=backend -o jsonpath='{.items[0].spec.nodeName}')}
+    | sort -u | grep -vxF -e "$MYSQL_NODE" -e "$CHROMA_NODE" | head -1 || true)
+  if [ -z "$NODE" ]; then
+    NODE=$(kubectl -n $NS get pods -l app=backend -o jsonpath='{.items[0].spec.nodeName}')
+    echo "Every chat pod shares a node with MySQL or Chroma, so this drain also restarts"
+    echo "them: sign-in and chat pause for about a minute while they move."
+  fi
   echo "Taking node $NODE out of service"
   # Mark the node unschedulable and evict its pods, as a node failure or GKE
   # upgrade would. The disruption budgets keep at least one pod of each
