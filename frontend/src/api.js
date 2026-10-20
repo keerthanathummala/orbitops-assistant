@@ -3,16 +3,20 @@
 const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
 
 const TOKEN_KEY = 'orbitops_token'
+// Also kept in memory, so signing in still works for this visit when the
+// browser blocks site storage.
+let memoryToken = null
 
 export function getToken() {
   try {
-    return localStorage.getItem(TOKEN_KEY)
+    return localStorage.getItem(TOKEN_KEY) || memoryToken
   } catch {
-    return null
+    return memoryToken
   }
 }
 
 function setToken(token) {
+  memoryToken = token || null
   try {
     if (token) localStorage.setItem(TOKEN_KEY, token)
     else localStorage.removeItem(TOKEN_KEY)

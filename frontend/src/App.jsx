@@ -12,13 +12,28 @@ const THEME_KEY = 'orbitops_theme'
 const THEME_LABELS = { system: 'Theme · auto', light: 'Theme · light', dark: 'Theme · dark' }
 const NEXT_THEME = { system: 'light', light: 'dark', dark: 'system' }
 
-function loadTheme() {
+// Site storage can be blocked (strict privacy settings); the app then just
+// forgets the open chat and theme on reload instead of failing to start.
+function readStored(key) {
   try {
-    const t = localStorage.getItem(THEME_KEY)
-    return t === 'light' || t === 'dark' ? t : 'system'
+    return localStorage.getItem(key)
   } catch {
-    return 'system'
+    return null
   }
+}
+
+function writeStored(key, value) {
+  try {
+    if (value) localStorage.setItem(key, value)
+    else localStorage.removeItem(key)
+  } catch {
+    // Storage blocked: nothing to remember it in.
+  }
+}
+
+function loadTheme() {
+  const t = readStored(THEME_KEY)
+  return t === 'light' || t === 'dark' ? t : 'system'
 }
 
 // crypto.randomUUID() only exists on HTTPS/localhost, and the GKE load
@@ -38,7 +53,7 @@ export default function App() {
   const [authChecked, setAuthChecked] = useState(!getToken())
   const [view, setView] = useState('chat')
   const [threads, setThreads] = useState([])
-  const [activeThread, setActiveThread] = useState(localStorage.getItem(ACTIVE_THREAD_KEY) || null)
+  const [activeThread, setActiveThread] = useState(() => readStored(ACTIVE_THREAD_KEY) || null)
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
@@ -79,7 +94,7 @@ export default function App() {
       setView('chat')
       setThreads([])
       setActiveThread(null)
-      localStorage.removeItem(ACTIVE_THREAD_KEY)
+      writeStored(ACTIVE_THREAD_KEY, null)
     }
     window.addEventListener('orbitops-signed-out', onSignedOut)
     return () => window.removeEventListener('orbitops-signed-out', onSignedOut)
@@ -127,12 +142,7 @@ export default function App() {
   useEffect(() => {
     if (theme === 'system') delete document.documentElement.dataset.theme
     else document.documentElement.dataset.theme = theme
-    try {
-      if (theme === 'system') localStorage.removeItem(THEME_KEY)
-      else localStorage.setItem(THEME_KEY, theme)
-    } catch {
-      // Storage blocked: the choice just won't survive a reload.
-    }
+    writeStored(THEME_KEY, theme === 'system' ? null : theme)
   }, [theme])
 
   // Keep the newest message (and the "Thinking…" line) in view. On a narrow
@@ -150,8 +160,7 @@ export default function App() {
     viewRef.current += 1
     setViewId(viewRef.current)
     setActiveThread(id)
-    if (id) localStorage.setItem(ACTIVE_THREAD_KEY, id)
-    else localStorage.removeItem(ACTIVE_THREAD_KEY)
+    writeStored(ACTIVE_THREAD_KEY, id)
   }
 
   function handleNewChat() {
@@ -298,7 +307,7 @@ export default function App() {
   }
   if (!authChecked) return null
   if (!user) {
-    return <AuthPage onSignedIn={(u) => { setUser(u); setActiveThread(null); localStorage.removeItem(ACTIVE_THREAD_KEY) }} />
+    return <AuthPage onSignedIn={(u) => { setUser(u); setActiveThread(null); writeStored(ACTIVE_THREAD_KEY, null) }} />
   }
   if (view === 'admin' && user.is_admin) {
     return <AdminPage onBack={() => setView('chat')} />
