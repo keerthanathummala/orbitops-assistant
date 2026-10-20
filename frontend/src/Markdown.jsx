@@ -5,7 +5,14 @@ import { colors, fonts } from './theme'
 // Builds React elements rather than HTML strings, so model output can never
 // inject markup into the page.
 
-const INLINE = /(`[^`]+`|\*\*[^*]+\*\*|__[^_]+__|\*[^*\s][^*]*\*|_[^_\s][^_]*_|\[[^\]]+\]\([^)\s]+\))/g
+// Underscore emphasis only counts at word edges, so names like snake_case
+// stay as they are; a link URL may contain one level of brackets, as in
+// https://en.wikipedia.org/wiki/Pod_(Kubernetes).
+const LINK_URL = String.raw`\((?:[^()\s]|\([^()\s]*\))+\)`
+const INLINE = new RegExp(
+  String.raw`(` + '`[^`]+`' + String.raw`|\*\*[^*]+\*\*|(?<![A-Za-z0-9])__[^_]+__(?![A-Za-z0-9])|\*[^*\s][^*]*\*|(?<![A-Za-z0-9])_[^_\s][^_]*_(?![A-Za-z0-9])|\[[^\]]+\]` + LINK_URL + ')',
+  'g',
+)
 
 function renderInline(text, keyPrefix) {
   return text.split(INLINE).filter(Boolean).map((part, i) => {
@@ -23,7 +30,7 @@ function renderInline(text, keyPrefix) {
     if ((part.startsWith('*') && part.endsWith('*')) || (part.startsWith('_') && part.endsWith('_'))) {
       if (part.length > 2) return <em key={key}>{part.slice(1, -1)}</em>
     }
-    const link = part.match(/^\[([^\]]+)\]\(([^)\s]+)\)$/)
+    const link = part.match(new RegExp(String.raw`^\[([^\]]+)\]\(((?:[^()\s]|\([^()\s]*\))+)\)$`))
     if (link && /^https?:\/\//.test(link[2])) {
       return (
         <a key={key} href={link[2]} target="_blank" rel="noopener noreferrer" style={{ color: colors.agentBadgeText }}>
@@ -33,6 +40,11 @@ function renderInline(text, keyPrefix) {
     }
     return part
   })
+}
+
+function nextNonBlankIsNumbered(lines, i) {
+  while (i < lines.length && lines[i].trim() === '') i++
+  return i < lines.length && /^\s*\d+[.)]\s+/.test(lines[i])
 }
 
 function parseBlocks(text) {
@@ -58,12 +70,21 @@ function parseBlocks(text) {
       }
       blocks.push({ type: 'ul', items })
     } else if (/^\s*\d+[.)]\s+/.test(line)) {
+      // Items separated by blank lines are still one list, and it starts at
+      // the first item's number, so "1. … 2. … 3." doesn't become "1. 1. 1.".
       const items = []
-      while (i < lines.length && /^\s*\d+[.)]\s+/.test(lines[i])) {
-        items.push({ text: lines[i].replace(/^\s*\d+[.)]\s+/, '') })
-        i++
+      const start = parseInt(line.match(/\d+/)[0], 10)
+      while (i < lines.length) {
+        if (/^\s*\d+[.)]\s+/.test(lines[i])) {
+          items.push({ text: lines[i].replace(/^\s*\d+[.)]\s+/, '') })
+          i++
+        } else if (lines[i].trim() === '' && nextNonBlankIsNumbered(lines, i)) {
+          i++
+        } else {
+          break
+        }
       }
-      blocks.push({ type: 'ol', items })
+      blocks.push({ type: 'ol', items, start })
     } else if (line.trim() === '') {
       i++
     } else {
@@ -97,7 +118,7 @@ export default function Markdown({ text }) {
         if (b.type === 'ul' || b.type === 'ol') {
           const List = b.type
           return (
-            <List key={key} style={{ ...gap, paddingLeft: 22 }}>
+            <List key={key} start={b.type === 'ol' && b.start !== 1 ? b.start : undefined} style={{ ...gap, paddingLeft: 22 }}>
               {b.items.map((it, ii) => (
                 <li key={ii} style={{ marginBottom: 6, marginLeft: it.nested ? 18 : 0 }}>{renderInline(it.text, `${key}-${ii}`)}</li>
               ))}
