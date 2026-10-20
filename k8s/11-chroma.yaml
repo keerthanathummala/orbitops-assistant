@@ -26,6 +26,11 @@ spec:
       labels:
         app: chroma
     spec:
+      # Kubernetes adds CHROMA_PORT=tcp://<ip>:8000 (and other CHROMA_*
+      # variables) to every pod because the Service is called "chroma".
+      # Chroma reads CHROMA_* variables as its own settings and exits when
+      # CHROMA_PORT isn't a number, so leave those variables out.
+      enableServiceLinks: false
       containers:
         - name: chroma
           image: chromadb/chroma:1.5.9
