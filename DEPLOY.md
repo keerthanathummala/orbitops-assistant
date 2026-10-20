@@ -81,16 +81,21 @@ gcloud container clusters get-credentials orbitops --zone $REGION-a
 
 ## 4. Deploy
 
-```bash
-# point the manifests at your registry
-sed -i "s/PROJECT_ID/$PROJECT_ID/g" k8s/2*.yaml   # macOS: sed -i ''  (commands.sh does this without editing the files)
+`./commands.sh deploy` does all of this. By hand:
 
+```bash
 kubectl apply -f k8s/00-namespace.yaml
 cp k8s/01-secrets.example.yaml k8s/secrets.yaml   # fill in passwords, GEMINI_API_KEY and ADMIN_PASSWORD (git-ignored)
 kubectl apply -f k8s/secrets.yaml
-kubectl apply -f k8s/02-configmap.yaml -f k8s/10-mysql.yaml -f k8s/11-chroma.yaml -f k8s/12-redis.yaml
-kubectl apply -f k8s/22-rbac.yaml       # read-only cluster access, for the ops service only
-kubectl apply -f k8s/20-backend.yaml -f k8s/21-frontend.yaml -f k8s/23-auth.yaml -f k8s/24-ops.yaml -f k8s/30-hpa.yaml
+
+# The manifests say PROJECT_ID in the image paths. Fill it in on the way to
+# the cluster rather than editing the files, so your project ID never ends
+# up in a commit.
+for f in k8s/02-configmap.yaml k8s/10-mysql.yaml k8s/11-chroma.yaml k8s/12-redis.yaml \
+         k8s/22-rbac.yaml \
+         k8s/20-backend.yaml k8s/21-frontend.yaml k8s/23-auth.yaml k8s/24-ops.yaml k8s/30-hpa.yaml; do
+  sed "s/PROJECT_ID/$PROJECT_ID/g" "$f" | kubectl apply -f -
+done
 
 kubectl -n orbitops get pods -w                 # wait until everything is Running/Ready
 kubectl -n orbitops get svc frontend            # EXTERNAL-IP is the app's public address
