@@ -46,6 +46,8 @@ export default function App() {
   // Files uploaded to the active chat: [{id, filename}], each removable.
   const [uploads, setUploads] = useState([])
   const uploadedCount = uploads.length
+  // The file being uploaded and the view it was attached in, while it uploads.
+  const [uploading, setUploading] = useState(null)
   const [error, setError] = useState('')
   // Which backend pod/version answered last -- makes load balancing and
   // rolling updates visible when demoing the Kubernetes deployment.
@@ -217,7 +219,7 @@ export default function App() {
   async function handleFileChange(e) {
     const file = e.target.files?.[0]
     e.target.value = ''
-    if (!file) return
+    if (!file || uploading) return
     if (uploadedCount >= MAX_UPLOADS) {
       setError(`Upload limit reached (${MAX_UPLOADS} documents max).`)
       return
@@ -229,12 +231,20 @@ export default function App() {
       setError('Send your first message before attaching documents.')
       return
     }
+    const view = viewRef.current
+    setError('')
+    setUploading({ name: file.name, view })
     try {
       await uploadDocument(threadId, file)
-      fetchUploads(threadId).then(setUploads).catch(() => {})
-      fetchStatus(threadId).then((s) => s && setStatus(s)).catch(() => {})
+      // If the user has opened another chat, that chat's own list is shown;
+      // this one picks the file up when reopened.
+      if (viewRef.current !== view) return
+      fetchUploads(threadId).then((u) => { if (viewRef.current === view) setUploads(u) }).catch(() => {})
+      fetchStatus(threadId).then((s) => { if (viewRef.current === view && s) setStatus(s) }).catch(() => {})
     } catch (err) {
-      setError(err.message)
+      if (viewRef.current === view) setError(err.message)
+    } finally {
+      setUploading(null)
     }
   }
 
@@ -413,6 +423,11 @@ export default function App() {
 
         {/* Input bar */}
         <div style={{ padding: '16px 10% 26px' }}>
+          {uploading && uploading.view === viewId && (
+            <div role="status" style={{ fontSize: 12.5, color: colors.textMuted, marginBottom: 8 }}>
+              Uploading {uploading.name}… large PDFs can take a minute to index.
+            </div>
+          )}
           {uploads.length > 0 && (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
               {uploads.map((u) => (
@@ -441,10 +456,10 @@ export default function App() {
             <input type="file" ref={fileInputRef} style={{ display: 'none' }} onChange={handleFileChange} accept=".txt,.md,.docx,.pdf" />
             <button
               onClick={() => fileInputRef.current?.click()}
-              disabled={uploadedCount >= MAX_UPLOADS}
-              style={{ fontSize: 12.5, fontWeight: 500, color: colors.textSecondary, background: colors.bluebg, border: `1px solid ${colors.border}`, borderRadius: 8, padding: '8px 12px', cursor: 'pointer', whiteSpace: 'nowrap' }}
+              disabled={uploadedCount >= MAX_UPLOADS || uploading !== null}
+              style={{ fontSize: 12.5, fontWeight: 500, color: colors.textSecondary, background: colors.bluebg, border: `1px solid ${colors.border}`, borderRadius: 8, padding: '8px 12px', cursor: uploading ? 'default' : 'pointer', opacity: uploading ? 0.6 : 1, whiteSpace: 'nowrap' }}
             >
-              Attach · {uploadedCount}/{MAX_UPLOADS}
+              {uploading ? 'Uploading…' : `Attach · ${uploadedCount}/${MAX_UPLOADS}`}
             </button>
             <button
               onClick={handleSend}
