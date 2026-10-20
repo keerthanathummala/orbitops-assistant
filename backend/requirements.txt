@@ -9,7 +9,7 @@ httpx
 pydantic
 rank-bm25
 sentence-transformers
-chromadb
+chromadb==1.5.9  # must match the Chroma server image (k8s/11-chroma.yaml, docker-compose.yml)
 scikit-learn
 numpy
 pandas
