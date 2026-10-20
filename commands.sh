@@ -123,7 +123,8 @@ demo-scale)
   ;;
 
 demo-scale-stop)
-  # Remove the load pods; the HPA scales back down after about 5 minutes.
+  # Remove the load pods; the HPA scales back down to 2 after about a minute
+  # (see 30-hpa.yaml), before the node-failure step.
   kubectl -n $NS delete deployment load
   ;;
 
@@ -146,7 +147,10 @@ demo-node-failure)
   # Mark the node unschedulable and evict its pods, as a node failure or GKE
   # upgrade would. The disruption budgets keep at least one pod of each
   # service running, so the app stays up while pods move to the other node.
-  kubectl drain "$NODE" --ignore-daemonsets --delete-emptydir-data
+  # Drain gives up after 2.5 minutes rather than holding up the demo if a
+  # replacement pod can't find room; the node is uncordoned either way.
+  kubectl drain "$NODE" --ignore-daemonsets --delete-emptydir-data --timeout=150s \
+    || echo "Drain didn't finish in time: some pods are still waiting for room on another node."
   # Every pod is now on the remaining node(s); the app still answers.
   kubectl -n $NS get pods -o wide
   # Bring the node back into service.

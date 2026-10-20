@@ -64,8 +64,11 @@ spec:
             - name: GOOGLE_CSE_ID
               valueFrom: { secretKeyRef: { name: orbitops-secrets, key: GOOGLE_CSE_ID } }
           resources:
-            # The embedding model + torch need ~1GB.
-            requests: { cpu: 250m, memory: 1Gi }
+            # The embedding model + torch need ~1GB. CPU requests across the
+            # app are kept small (about 0.7 CPU in total) so every pod still
+            # fits on one e2-standard-2 node, next to GKE's own pods, while
+            # the other node is drained; the limit lets a pod burst to 1 CPU.
+            requests: { cpu: 150m, memory: 1Gi }
             limits: { cpu: "1", memory: 2Gi }
           startupProbe:
             # Startup loads the embedding model (baked into the image) and

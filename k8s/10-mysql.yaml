@@ -43,7 +43,7 @@ spec:
             - name: MYSQL_ROOT_PASSWORD
               valueFrom: { secretKeyRef: { name: orbitops-secrets, key: MYSQL_ROOT_PASSWORD } }
           resources:
-            requests: { cpu: 250m, memory: 512Mi }
+            requests: { cpu: 100m, memory: 512Mi }
             limits: { memory: 1Gi }
           readinessProbe:
             exec:

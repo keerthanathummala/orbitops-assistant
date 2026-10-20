@@ -55,7 +55,7 @@ spec:
               valueFrom: { secretKeyRef: { name: orbitops-secrets, key: GEMINI_API_KEY } }
           resources:
             # Loads the embedding model to search the runbooks.
-            requests: { cpu: 100m, memory: 768Mi }
+            requests: { cpu: 50m, memory: 768Mi }
             limits: { cpu: "1", memory: 1536Mi }
           startupProbe:
             httpGet: { path: /api/health, port: 8000 }
