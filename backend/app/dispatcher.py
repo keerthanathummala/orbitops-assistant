@@ -20,7 +20,7 @@ from __future__ import annotations
 import os
 import re
 import time
-from typing import Literal
+from typing import Literal, Optional
 
 import httpx
 
@@ -53,12 +53,25 @@ def ops_available() -> bool:
     return available
 
 
-def ops_answer(thread_id: str, query: str) -> dict:
+def ops_answer(thread_id: str, query: str) -> Optional[dict]:
+    """The ops service's answer, or None if it can't be reached right now
+    (restarting, rescheduled after a node drain), so the caller can answer
+    from the runbooks instead."""
+    global _ops_available
     if not OPS_SERVICE_URL:
         return cluster_ops.ops_answer(query, rag_session=rag_core.get_or_create_session(thread_id))
-    r = httpx.post(f"{OPS_SERVICE_URL}/internal/ops/answer",
-                   json={"thread_id": thread_id, "query": query}, timeout=110)
-    r.raise_for_status()  # a 429 here is the model quota; main.py explains it
+    try:
+        r = httpx.post(f"{OPS_SERVICE_URL}/internal/ops/answer",
+                       json={"thread_id": thread_id, "query": query}, timeout=110)
+    except httpx.TransportError:
+        _ops_available = (time.monotonic(), False)
+        return None
+    if r.status_code == 429:
+        r.raise_for_status()  # the model quota; main.py explains it
+    if r.status_code >= 500:
+        _ops_available = (time.monotonic(), False)
+        return None
+    r.raise_for_status()
     return r.json()
 
 AGENT_SIGNALS = [
@@ -114,7 +127,10 @@ def handle_message(thread_id: str, query: str) -> dict:
 
     if route == "ops":
         ops_result = ops_answer(thread_id, query)
-        segments.append({"source": "ops", "text": ops_result["text"], "citations": ops_result["citations"]})
+        if ops_result is None:
+            route = "rag"  # ops service unreachable: answer from the runbooks
+        else:
+            segments.append({"source": "ops", "text": ops_result["text"], "citations": ops_result["citations"]})
 
     if route in ("rag", "both"):
         rag_session = rag_core.get_or_create_session(thread_id)
