@@ -322,14 +322,16 @@ def _compact(snap: dict) -> str:
     return json.dumps(snap, default=str, separators=(",", ":"))[:12000]
 
 
-def ops_answer(query: str, rag_session=None) -> dict:
-    """Answers a question about the live deployment."""
+def ops_answer(query: str, rag_session=None, include_logs: bool = False) -> dict:
+    """Answers a question about the live deployment. Pod logs (which hold
+    other users' IP addresses and chat ids) are only read for the admin;
+    everyone else gets the cluster state and events."""
     if not is_available():
         return {"text": unavailable_message(), "citations": []}
 
     snap = snapshot()
     issues = detect_issues(snap)
-    log_app = wanted_log_app(query)
+    log_app = wanted_log_app(query) if include_logs else None
     logs = recent_logs(log_app) if log_app else None
     runbooks, citations = _runbook_context(rag_session, query + " " + " ".join(i["problem"] for i in issues[:3]))
 
@@ -355,11 +357,14 @@ INSTRUCTIONS:
 3. If something needs fixing, give concrete next steps; cite runbooks as [doc_id] when you use them.
 4. Never invent pods, numbers or errors that are not in the data. If the data can't answer it, say so.
 """
+    if not include_logs and wanted_log_app(query):
+        prompt += "5. Pod logs are only shown to the admin account; if the question needs them, say so.\n"
     return {"text": llm.generate(prompt), "citations": citations if runbooks else []}
 
 
-def health_check(rag_session=None) -> dict:
-    """One-click scan: rule-based issues + an LLM incident summary."""
+def health_check(rag_session=None, include_logs: bool = False) -> dict:
+    """One-click scan: rule-based issues + an LLM incident summary. Logs of
+    the affected pods are only read for the admin (see ops_answer)."""
     if not is_available():
         return {"status": "unavailable", "issues": [], "summary": unavailable_message(), "citations": []}
 
@@ -375,7 +380,8 @@ def health_check(rag_session=None) -> dict:
         return {"status": status, "issues": [], "summary": summary, "citations": [], "taken_at": snap["taken_at"]}
 
     affected_apps = {p["app"] for p in snap["pods"] if any(p["name"] in i["object"] for i in issues)}
-    logs = {app: recent_logs(app, lines=100) for app in sorted(affected_apps) if app}
+    logs = ({app: recent_logs(app, lines=100) for app in sorted(affected_apps) if app}
+            if include_logs else "not included (only the admin account sees pod logs)")
     runbooks, citations = _runbook_context(rag_session, "incident " + " ".join(i["problem"] for i in issues[:5]))
 
     prompt = f"""You are the AIOps assistant for the OrbitOps platform on Kubernetes. Automated

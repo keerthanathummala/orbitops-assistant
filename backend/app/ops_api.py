@@ -46,7 +46,7 @@ def ops_health_check(thread_id: str = Form(...), user: dict = Depends(auth.curre
     # The thread's session so runbooks the user uploaded are searched too.
     session = rag_core.get_or_create_session(thread_id)
     try:
-        result = cluster_ops.health_check(rag_session=session)
+        result = cluster_ops.health_check(rag_session=session, include_logs=user["is_admin"])
     except Exception as e:
         if llm.is_quota_error(e):
             raise HTTPException(429, llm.QUOTA_MESSAGE)
@@ -79,6 +79,7 @@ def ops_health_check(thread_id: str = Form(...), user: dict = Depends(auth.curre
 class OpsQuestion(BaseModel):
     thread_id: str
     query: str = Field(..., max_length=guardrails.MAX_QUERY_LENGTH + 50)
+    include_logs: bool = False  # the chat service sets it for the admin only
 
 
 @router.get("/internal/ops/available")
@@ -94,7 +95,7 @@ def ops_internal_answer(req: OpsQuestion):
     except LookupError:
         raise HTTPException(404, "Chat not found.")
     try:
-        return cluster_ops.ops_answer(req.query, rag_session=session)
+        return cluster_ops.ops_answer(req.query, rag_session=session, include_logs=req.include_logs)
     except Exception as e:
         if llm.is_quota_error(e):
             raise HTTPException(429, llm.QUOTA_MESSAGE)

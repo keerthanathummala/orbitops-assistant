@@ -126,7 +126,7 @@ def chat(req: ChatRequest, user: dict = Depends(auth.current_user)):
 
     store.ensure_thread(thread_id, title_hint=req.message, user_id=user["id"])
     try:
-        result = dispatcher.handle_message(thread_id, req.message)
+        result = dispatcher.handle_message(thread_id, req.message, is_admin=user["is_admin"])
     except Exception as e:
         if llm.is_quota_error(e):
             raise HTTPException(429, llm.QUOTA_MESSAGE)
