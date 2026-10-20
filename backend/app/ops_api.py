@@ -42,6 +42,7 @@ def ops_health_check(thread_id: str = Form(...), user: dict = Depends(auth.curre
     if not check_rate_limit(f"health:{thread_id}", *HEALTH_CHECK_RATE_LIMIT):
         raise HTTPException(429, "Too many health checks — try again shortly.")
 
+    store.ensure_thread(thread_id, title_hint="Cluster health check", user_id=user["id"])
     # The thread's session so runbooks the user uploaded are searched too.
     session = rag_core.get_or_create_session(thread_id)
     try:
@@ -61,7 +62,6 @@ def ops_health_check(thread_id: str = Form(...), user: dict = Depends(auth.curre
     lines.append(result["summary"])
     text = "\n".join(lines)
 
-    store.ensure_thread(thread_id, title_hint="Cluster health check", user_id=user["id"])
     store.add_message(thread_id, "user", "Run a cluster health check")
     store.add_message(thread_id, "assistant", text, source="ops",
                       citations=json.dumps(result["citations"]) if result["citations"] else None)
@@ -89,7 +89,10 @@ def ops_available():
 @router.post("/internal/ops/answer")
 def ops_internal_answer(req: OpsQuestion):
     common.require_valid_thread_id(req.thread_id)
-    session = rag_core.get_or_create_session(req.thread_id)
+    try:
+        session = rag_core.get_or_create_session(req.thread_id)
+    except LookupError:
+        raise HTTPException(404, "Chat not found.")
     try:
         return cluster_ops.ops_answer(req.query, rag_session=session)
     except Exception as e:

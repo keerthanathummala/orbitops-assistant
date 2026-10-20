@@ -31,6 +31,7 @@ import os
 import re
 import json
 import time
+from collections import OrderedDict
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
@@ -616,8 +617,11 @@ class RagSession:
         ))}
 
 
-# One RagSession per thread_id, kept in memory for the process lifetime.
-_sessions: Dict[str, RagSession] = {}
+# One RagSession per thread_id, kept in memory. Only the most recently used
+# MAX_SESSIONS stay loaded; an evicted chat is rebuilt from the database the
+# next time it is used, so memory stays bounded however many chats exist.
+MAX_SESSIONS = int(os.environ.get("MAX_RAG_SESSIONS", "50"))
+_sessions: "OrderedDict[str, RagSession]" = OrderedDict()
 
 
 PRUNE_EVERY_SECONDS = 60
@@ -642,12 +646,26 @@ def _prune_deleted_sessions() -> None:
 
 
 def get_or_create_session(thread_id: str) -> RagSession:
+    """The thread's index, built on first use. Only chats saved in the
+    database get one, so made-up thread ids can't fill memory or Chroma."""
     _prune_deleted_sessions()
-    if thread_id not in _sessions:
-        _sessions[thread_id] = RagSession(thread_id)
+    session = _sessions.get(thread_id)
+    if session is None:
+        if not store.existing_thread_ids([thread_id]):
+            raise LookupError(f"No chat {thread_id}")
+        session = RagSession(thread_id)
+        _sessions[thread_id] = session
+        while len(_sessions) > MAX_SESSIONS:
+            _sessions.popitem(last=False)
     else:
-        _sessions[thread_id].sync_uploads()
-    return _sessions[thread_id]
+        _sessions.move_to_end(thread_id)
+        session.sync_uploads()
+    return session
+
+
+def base_docs_count() -> int:
+    """Documents a chat with no uploads searches: the base corpus."""
+    return len(load_documents(DATA_DIR))
 
 
 def drop_session(thread_id: str) -> None:

@@ -153,5 +153,9 @@ def handle_message(thread_id: str, query: str) -> dict:
 
 
 def docs_indexed_count(thread_id: str) -> int:
+    # A new chat isn't saved until its first message or upload; don't build
+    # an index just to count the base documents.
+    if not store.existing_thread_ids([thread_id]):
+        return rag_core.base_docs_count()
     session = rag_core.get_or_create_session(thread_id)
     return len(set(c.metadata["doc_id"] for c in session.chunks))
