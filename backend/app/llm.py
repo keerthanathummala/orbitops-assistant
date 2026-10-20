@@ -91,6 +91,21 @@ def is_quota_error(exc: BaseException) -> bool:
     return any(s in text for s in ("429", "RESOURCE_EXHAUSTED", "ResourceExhausted", "quota"))
 
 
+def is_unavailable_error(exc: BaseException) -> bool:
+    """True when the provider timed out or failed on its side (a 5xx such as
+    504 DEADLINE_EXCEEDED or 503 UNAVAILABLE, or no reply in time). Worth
+    retrying in a moment, and not a bug in the app."""
+    text = f"{type(exc).__name__} {exc}"
+    return any(s in text for s in (
+        "DEADLINE_EXCEEDED", "UNAVAILABLE", "INTERNAL", "Timeout", "timed out",
+        "500 ", "502 ", "503 ", "504 ",
+    ))
+
+
+UNAVAILABLE_MESSAGE = ("The AI model took too long to answer or is busy right now. "
+                       "Please try again in a moment.")
+
+
 QUOTA_MESSAGE = ("The AI model's free usage limit has been reached for now. "
                  "Please try again in a minute, or later today if the daily limit is used up.")
 

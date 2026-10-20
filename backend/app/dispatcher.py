@@ -27,6 +27,7 @@ import httpx
 from . import rag_core
 from . import agent_core
 from . import cluster_ops
+from . import llm
 from . import store
 
 # On Kubernetes, cluster questions go to the separate ops service, the only
@@ -53,6 +54,13 @@ def ops_available() -> bool:
     return available
 
 
+def _detail(r: httpx.Response) -> str:
+    try:
+        return r.json().get("detail", "")
+    except ValueError:
+        return ""
+
+
 def ops_answer(thread_id: str, query: str, is_admin: bool = False) -> Optional[dict]:
     """The ops service's answer, or None if it can't be reached right now
     (restarting, rescheduled after a node drain), so the caller can answer
@@ -70,6 +78,9 @@ def ops_answer(thread_id: str, query: str, is_admin: bool = False) -> Optional[d
         return None
     if r.status_code == 429:
         r.raise_for_status()  # the model quota; main.py explains it
+    if r.status_code == 503 and _detail(r) == llm.UNAVAILABLE_MESSAGE:
+        # The ops service is fine; its model call timed out. main.py explains it.
+        raise RuntimeError("UNAVAILABLE: the ops service's model call failed")
     if r.status_code >= 500:
         _ops_available = (time.monotonic(), False)
         return None

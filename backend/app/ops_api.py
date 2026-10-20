@@ -50,6 +50,8 @@ def ops_health_check(thread_id: str = Form(...), user: dict = Depends(auth.curre
     except Exception as e:
         if llm.is_quota_error(e):
             raise HTTPException(429, llm.QUOTA_MESSAGE)
+        if llm.is_unavailable_error(e):
+            raise HTTPException(503, llm.UNAVAILABLE_MESSAGE)
         raise
 
     label = {"healthy": "Healthy", "warning": "Warning", "critical": "Critical",
@@ -99,4 +101,6 @@ def ops_internal_answer(req: OpsQuestion):
     except Exception as e:
         if llm.is_quota_error(e):
             raise HTTPException(429, llm.QUOTA_MESSAGE)
+        if llm.is_unavailable_error(e):
+            raise HTTPException(503, llm.UNAVAILABLE_MESSAGE)
         raise
