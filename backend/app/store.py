@@ -289,13 +289,15 @@ def new_thread_id() -> str:
 
 
 def ensure_thread(thread_id: str, title_hint: str = "New chat", user_id: Optional[int] = None) -> None:
+    # One statement, so a chat's first message and an upload arriving
+    # together can't both try to insert it and have one fail.
+    conflict = ("ON DUPLICATE KEY UPDATE thread_id = thread_id" if MYSQL_HOST
+                else "ON CONFLICT(thread_id) DO NOTHING")
     with _conn() as conn:
-        row = conn.execute("SELECT thread_id FROM threads WHERE thread_id = ?", (thread_id,)).fetchone()
-        if row is None:
-            conn.execute(
-                "INSERT INTO threads (thread_id, title, created_at, user_id) VALUES (?, ?, ?, ?)",
-                (thread_id, title_hint[:60], _now(), user_id),
-            )
+        conn.execute(
+            "INSERT INTO threads (thread_id, title, created_at, user_id) VALUES (?, ?, ?, ?) " + conflict,
+            (thread_id, title_hint[:60], _now(), user_id),
+        )
 
 
 def thread_owner(thread_id: str):
