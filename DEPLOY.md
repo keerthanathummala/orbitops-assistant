@@ -96,10 +96,9 @@ kubectl -n orbitops get svc frontend            # EXTERNAL-IP is the app's publi
 ## 5. The 4-minute demo (Week 13)
 
 Before the demo: deploy, open the app in a browser, sign in, and check that
-`./commands.sh status` shows everything Ready. Use a Gemini key with quota
-to spare on the day (a fresh key, or billing turned on for the key's
-project): the free tier allows only a few requests a minute, and every
-user shares the one key. The v2 image was already pushed by `build`, so
+`./commands.sh status` shows everything Ready. The Gemini free tier
+allows only a few requests a minute and a daily total, shared by every
+user, so avoid testing with it on demo day before the demo. The v2 image was already pushed by `build`, so
 nothing has to build during the demo.
 
 | Time | Show | Run | What to point at |
