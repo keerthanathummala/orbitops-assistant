@@ -51,6 +51,10 @@ export default function App() {
   // Signed-in account; authChecked is false until a saved session has been verified.
   const [user, setUser] = useState(null)
   const [authChecked, setAuthChecked] = useState(!getToken())
+  // Set when the saved session couldn't be checked (server unreachable, not
+  // a 401), so the page offers a retry instead of a sign-in form that would
+  // leave the old token in place.
+  const [authError, setAuthError] = useState('')
   const [view, setView] = useState('chat')
   const [threads, setThreads] = useState([])
   const [activeThread, setActiveThread] = useState(() => readStored(ACTIVE_THREAD_KEY) || null)
@@ -85,10 +89,17 @@ export default function App() {
 
   // Resume a saved session, and drop back to sign-in whenever the API says
   // the session is gone (expired, signed out elsewhere, or account deleted).
+  function checkSession() {
+    fetchMe()
+      .then((u) => { setUser(u); setAuthChecked(true) })
+      .catch((e) => {
+        if (e.status === 401) setAuthChecked(true)  // api.js has cleared the token
+        else setAuthError(e.message || 'The server could not be reached.')
+      })
+  }
+
   useEffect(() => {
-    if (getToken()) {
-      fetchMe().then(setUser).catch(() => {}).finally(() => setAuthChecked(true))
-    }
+    if (getToken()) checkSession()
     const onSignedOut = () => {
       setUser(null)
       setView('chat')
@@ -305,7 +316,24 @@ export default function App() {
   if (!started) {
     return <CoverPage onContinue={() => setStarted(true)} />
   }
-  if (!authChecked) return null
+  if (!authChecked) {
+    return (
+      <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 14, background: colors.bluebg, fontFamily: fonts.body, color: colors.textMain, padding: '24px 16px', textAlign: 'center' }}>
+        {authError ? (
+          <>
+            <div role="alert" style={{ fontSize: 15, maxWidth: 420, lineHeight: 1.5 }}>
+              Couldn't check your sign-in: {authError}
+            </div>
+            <button onClick={() => { setAuthError(''); checkSession() }} style={{ background: colors.accent, color: colors.accentText, border: 'none', fontFamily: 'inherit', fontWeight: 500, fontSize: 14, padding: '10px 18px', borderRadius: 8, cursor: 'pointer' }}>
+              Try again
+            </button>
+          </>
+        ) : (
+          <div role="status" style={{ fontSize: 14, color: colors.textMuted }}>Checking your sign-in…</div>
+        )}
+      </div>
+    )
+  }
   if (!user) {
     return <AuthPage onSignedIn={(u) => { setUser(u); setActiveThread(null); writeStored(ACTIVE_THREAD_KEY, null) }} />
   }
