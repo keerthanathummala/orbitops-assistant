@@ -36,6 +36,8 @@ spec:
         app: ops
     spec:
       serviceAccountName: orbitops-ops
+      # 10 s preStop plus time for an in-flight chat answer to finish.
+      terminationGracePeriodSeconds: 75
       containers:
         - name: ops
           image: australia-southeast1-docker.pkg.dev/PROJECT_ID/orbitops/backend:v1
@@ -61,6 +63,12 @@ spec:
             httpGet: { path: /api/health, port: 8000 }
             periodSeconds: 5
             failureThreshold: 36
+          lifecycle:
+            # Kubernetes takes a stopping pod out of the Service a moment
+            # after it is told to stop; keep accepting requests meanwhile so
+            # a rollout, rollback or drain doesn't return 502s.
+            preStop:
+              exec: { command: ["sleep", "10"] }
           readinessProbe:
             httpGet: { path: /api/ready, port: 8000 }
             periodSeconds: 10
