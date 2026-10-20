@@ -36,10 +36,13 @@ OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 MAX_OUTPUT_TOKENS = 4096
 
 # Every answer has to fit inside nginx's 180 s proxy timeout (frontend/
-# nginx.conf), and the agent and "docs + web" routes make two model calls.
-# Without these, the Gemini client waits indefinitely and retries a 429
-# several times, so the browser gives up while the backend is still working.
-LLM_TIMEOUT_SECONDS = 50
+# nginx.conf), and the agent and "docs + web" routes make two model calls,
+# so each call gets up to 85 s. Without a limit the Gemini client waits
+# indefinitely and retries a 429 several times, so the browser gives up while
+# the backend is still working. A shorter limit (it was 50 s) made Google stop
+# slow answers with 504 DEADLINE_EXCEEDED that would otherwise have arrived.
+# LLM_MAX_RETRIES counts attempts for Gemini, so 1 means no automatic retry.
+LLM_TIMEOUT_SECONDS = float(os.environ.get("LLM_TIMEOUT_SECONDS", "85"))
 LLM_MAX_RETRIES = 1
 
 # Gemini 3 models "think" before answering, at a high level by default, which
