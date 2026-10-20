@@ -54,6 +54,13 @@ export default function App() {
   const [theme, setTheme] = useState(loadTheme)
   const fileInputRef = useRef(null)
   const scrollRef = useRef(null)
+  // Bumped whenever the user opens another chat or starts a new one. A reply
+  // that arrives after that belongs to the chat it was sent from, which
+  // loads it from the server when reopened, so it isn't added to this view.
+  const viewRef = useRef(0)
+  const [viewId, setViewId] = useState(0)
+  // The view a request is waiting on, so "Thinking…" shows only there.
+  const [pendingView, setPendingView] = useState(null)
 
   // Resume a saved session, and drop back to sign-in whenever the API says
   // the session is gone (expired, signed out elsewhere, or account deleted).
@@ -115,6 +122,8 @@ export default function App() {
   }, [messages])
 
   function persistActiveThread(id) {
+    viewRef.current += 1
+    setViewId(viewRef.current)
     setActiveThread(id)
     if (id) localStorage.setItem(ACTIVE_THREAD_KEY, id)
     else localStorage.removeItem(ACTIVE_THREAD_KEY)
@@ -122,6 +131,7 @@ export default function App() {
 
   function handleNewChat() {
     persistActiveThread(null)
+    setMessages([])
     setInput('')
     setError('')
   }
@@ -137,21 +147,23 @@ export default function App() {
     setSending(true)
     setInput('')
     setMessages((prev) => [...prev, { role: 'user', content: text, source: null }])
+    const view = viewRef.current
+    setPendingView(view)
 
     try {
       const res = await sendChat(activeThread, text)
-      if (!activeThread) persistActiveThread(res.thread_id)
       refreshThreads()
-      setMessages((prev) => [
-        ...prev,
-        ...res.segments.map((seg) => ({ role: 'assistant', content: seg.text, source: seg.source, citations: seg.citations })),
-      ])
-      fetchStatus(res.thread_id).then((s) => s && setStatus(s)).catch(() => {})
       fetchHealth().then(setServed).catch(() => {})
+      if (viewRef.current !== view) return  // the user moved to another chat meanwhile
+      const reply = res.segments.map((seg) => ({ role: 'assistant', content: seg.text, source: seg.source, citations: seg.citations }))
+      if (!activeThread) persistActiveThread(res.thread_id)
+      setMessages((prev) => [...prev, ...reply])
+      fetchStatus(res.thread_id).then((s) => s && setStatus(s)).catch(() => {})
     } catch (e) {
-      setError(e.message || 'Something went wrong — is the backend running?')
+      if (viewRef.current === view) setError(e.message || 'Something went wrong — is the backend running?')
     } finally {
       setSending(false)
+      setPendingView(null)
     }
   }
 
@@ -162,16 +174,20 @@ export default function App() {
     setSending(true)
     const threadId = activeThread || newThreadId()
     setMessages((prev) => [...prev, { role: 'user', content: 'Run a cluster health check', source: null }])
+    const view = viewRef.current
+    setPendingView(view)
     try {
       const res = await runHealthCheck(threadId)
-      if (!activeThread) persistActiveThread(threadId)
       refreshThreads()
-      setMessages((prev) => [...prev, { role: 'assistant', content: res.text, source: 'ops', citations: res.citations }])
       fetchHealth().then(setServed).catch(() => {})
+      if (viewRef.current !== view) return
+      if (!activeThread) persistActiveThread(threadId)
+      setMessages((prev) => [...prev, { role: 'assistant', content: res.text, source: 'ops', citations: res.citations }])
     } catch (e) {
-      setError(e.message || 'Health check failed')
+      if (viewRef.current === view) setError(e.message || 'Health check failed')
     } finally {
       setSending(false)
+      setPendingView(null)
     }
   }
 
@@ -361,7 +377,7 @@ export default function App() {
               </div>
             )
           )}
-          {sending && (
+          {sending && pendingView === viewId && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, paddingLeft: 2 }}>
               <div style={{ width: 5, height: 5, borderRadius: '50%', background: colors.dot }} />
               <div style={{ width: 5, height: 5, borderRadius: '50%', background: colors.dot }} />
