@@ -151,8 +151,18 @@ export default function App() {
     return () => { current = false }
   }, [activeThread, user])
 
+  // If the page opened before the backend finished starting, keep asking
+  // until it answers, so the model pill doesn't stay on "connecting…".
   useEffect(() => {
-    fetchHealth().then(setServed).catch(() => {})
+    let timer
+    let stopped = false
+    const load = () => {
+      fetchHealth()
+        .then((h) => { if (stopped) return; if (h) setServed(h); else timer = setTimeout(load, 5000) })
+        .catch(() => { if (!stopped) timer = setTimeout(load, 5000) })
+    }
+    load()
+    return () => { stopped = true; clearTimeout(timer) }
   }, [])
 
   useEffect(() => {
