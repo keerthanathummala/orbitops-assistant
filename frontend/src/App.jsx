@@ -61,6 +61,9 @@ export default function App() {
   const [viewId, setViewId] = useState(0)
   // The view a request is waiting on, so "Thinking…" shows only there.
   const [pendingView, setPendingView] = useState(null)
+  // A chat that was just created by sending from "New chat": its messages are
+  // already on screen, so opening it doesn't reload them.
+  const justCreatedRef = useRef(null)
 
   // Resume a saved session, and drop back to sign-in whenever the API says
   // the session is gone (expired, signed out elsewhere, or account deleted).
@@ -97,9 +100,21 @@ export default function App() {
       setUploads([])
       return
     }
-    fetchThreadMessages(activeThread).then(setMessages).catch(() => {})
-    fetchUploads(activeThread).then(setUploads).catch(() => {})
-    fetchStatus(activeThread).then((s) => s && setStatus(s)).catch(() => {})
+    // Responses for a chat the user has already left are ignored, so a slow
+    // load of chat A can't overwrite chat B after a quick switch.
+    let current = true
+    if (justCreatedRef.current === activeThread) {
+      justCreatedRef.current = null
+    } else {
+      setMessages([])
+      setUploads([])
+      fetchThreadMessages(activeThread)
+        .then((m) => { if (current) setMessages(m) })
+        .catch((e) => { if (current) setError(`Couldn't load this chat: ${e.message}`) })
+    }
+    fetchUploads(activeThread).then((u) => { if (current) setUploads(u) }).catch(() => {})
+    fetchStatus(activeThread).then((s) => { if (current && s) setStatus(s) }).catch(() => {})
+    return () => { current = false }
   }, [activeThread, user])
 
   useEffect(() => {
@@ -137,6 +152,8 @@ export default function App() {
   }
 
   function handleSelectThread(id) {
+    if (id === activeThread) return
+    setError('')
     persistActiveThread(id)
   }
 
@@ -156,7 +173,10 @@ export default function App() {
       fetchHealth().then(setServed).catch(() => {})
       if (viewRef.current !== view) return  // the user moved to another chat meanwhile
       const reply = res.segments.map((seg) => ({ role: 'assistant', content: seg.text, source: seg.source, citations: seg.citations }))
-      if (!activeThread) persistActiveThread(res.thread_id)
+      if (!activeThread) {
+        justCreatedRef.current = res.thread_id
+        persistActiveThread(res.thread_id)
+      }
       setMessages((prev) => [...prev, ...reply])
       fetchStatus(res.thread_id).then((s) => s && setStatus(s)).catch(() => {})
     } catch (e) {
@@ -181,7 +201,10 @@ export default function App() {
       refreshThreads()
       fetchHealth().then(setServed).catch(() => {})
       if (viewRef.current !== view) return
-      if (!activeThread) persistActiveThread(threadId)
+      if (!activeThread) {
+        justCreatedRef.current = threadId
+        persistActiveThread(threadId)
+      }
       setMessages((prev) => [...prev, { role: 'assistant', content: res.text, source: 'ops', citations: res.citations }])
     } catch (e) {
       if (viewRef.current === view) setError(e.message || 'Health check failed')
