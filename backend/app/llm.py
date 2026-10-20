@@ -21,15 +21,23 @@ already used by google_search.py for the Custom Search tool.
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Dict
 
 from langchain_core.messages import HumanMessage
 
+log = logging.getLogger("uvicorn.error")
+
 LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "gemini").lower()
 # gemini-3.8-flash timed out (504) even for a one-word question on the free
 # tier, while gemini-3.5-flash answered in a few seconds.
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash")
+# On the free tier Google sometimes answers 503/504 (busy) or 429 (that
+# model's limit) for one model while others still work, and each model has
+# its own limit. Such a call is tried once more on this model; leave it empty
+# to turn the fallback off.
+GEMINI_FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-3.1-flash-lite")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:7b")
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 
@@ -38,13 +46,13 @@ OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 MAX_OUTPUT_TOKENS = 4096
 
 # Every answer has to fit inside nginx's 180 s proxy timeout (frontend/
-# nginx.conf), and the agent and "docs + web" routes make two model calls,
-# so each call gets up to 85 s. Without a limit the Gemini client waits
+# nginx.conf), and a call can be tried on the fallback model too, so each
+# attempt gets up to 60 s. Without a limit the Gemini client waits
 # indefinitely and retries a 429 several times, so the browser gives up while
-# the backend is still working. A shorter limit (it was 50 s) made Google stop
-# slow answers with 504 DEADLINE_EXCEEDED that would otherwise have arrived.
+# the backend is still working. gemini-3.5-flash answers in a few seconds;
+# a call that takes a minute has stalled on Google's side.
 # LLM_MAX_RETRIES counts attempts for Gemini, so 1 means no automatic retry.
-LLM_TIMEOUT_SECONDS = float(os.environ.get("LLM_TIMEOUT_SECONDS", "85"))
+LLM_TIMEOUT_SECONDS = float(os.environ.get("LLM_TIMEOUT_SECONDS", "60"))
 LLM_MAX_RETRIES = 1
 
 # Gemini 3 models "think" before answering, at a high level by default, which
@@ -53,10 +61,10 @@ LLM_MAX_RETRIES = 1
 # use a low level; GEMINI_THINKING_LEVEL can raise it (minimal|low|medium|high).
 GEMINI_THINKING_LEVEL = os.environ.get("GEMINI_THINKING_LEVEL", "low").lower()
 
-_llms: Dict[float, object] = {}
+_llms: Dict[tuple, object] = {}
 
 
-def _build(temperature: float):
+def _build(temperature: float, model: str):
     if LLM_PROVIDER == "ollama":
         from langchain_ollama import ChatOllama
         return ChatOllama(model=OLLAMA_MODEL, base_url=OLLAMA_HOST,
@@ -67,7 +75,7 @@ def _build(temperature: float):
     api_key = os.environ.get("GEMINI_API_KEY", "")
     if not api_key:
         raise RuntimeError("LLM_PROVIDER=gemini but GEMINI_API_KEY is not set.")
-    return ChatGoogleGenerativeAI(model=GEMINI_MODEL, google_api_key=api_key,
+    return ChatGoogleGenerativeAI(model=model, google_api_key=api_key,
                                   temperature=temperature, max_output_tokens=MAX_OUTPUT_TOKENS,
                                   timeout=LLM_TIMEOUT_SECONDS, max_retries=LLM_MAX_RETRIES,
                                   thinking_level=GEMINI_THINKING_LEVEL)
@@ -82,10 +90,11 @@ def status() -> dict:
             "configured": bool(os.environ.get("GEMINI_API_KEY"))}
 
 
-def get_llm(temperature: float = 0.0):
-    if temperature not in _llms:
-        _llms[temperature] = _build(temperature)
-    return _llms[temperature]
+def get_llm(temperature: float = 0.0, model: str = GEMINI_MODEL):
+    key = (temperature, model)
+    if key not in _llms:
+        _llms[key] = _build(temperature, model)
+    return _llms[key]
 
 
 def is_quota_error(exc: BaseException) -> bool:
@@ -119,7 +128,17 @@ def generate(prompt: str, temperature: float = 0.0) -> str:
     """Single-prompt completion returning plain text. Gemini can return
     content as a list of parts rather than a string, so normalise here
     instead of at every call site."""
-    content = get_llm(temperature).invoke([HumanMessage(content=prompt)]).content
+    messages = [HumanMessage(content=prompt)]
+    try:
+        content = get_llm(temperature).invoke(messages).content
+    except Exception as e:
+        if (LLM_PROVIDER == "ollama" or not GEMINI_FALLBACK_MODEL
+                or GEMINI_FALLBACK_MODEL == GEMINI_MODEL
+                or not (is_unavailable_error(e) or is_quota_error(e))):
+            raise
+        log.warning("%s failed (%s); retrying on %s", GEMINI_MODEL,
+                    str(e)[:120], GEMINI_FALLBACK_MODEL)
+        content = get_llm(temperature, GEMINI_FALLBACK_MODEL).invoke(messages).content
     if isinstance(content, list):
         content = "".join(p.get("text", "") if isinstance(p, dict) else str(p) for p in content)
     return content.strip()
