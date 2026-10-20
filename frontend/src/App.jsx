@@ -165,7 +165,8 @@ export default function App() {
     setError('')
     setSending(true)
     setInput('')
-    setMessages((prev) => [...prev, { role: 'user', content: text, source: null }])
+    const pending = { role: 'user', content: text, source: null }
+    setMessages((prev) => [...prev, pending])
     const view = viewRef.current
     setPendingView(view)
 
@@ -182,7 +183,13 @@ export default function App() {
       setMessages((prev) => [...prev, ...reply])
       fetchStatus(res.thread_id).then((s) => s && setStatus(s)).catch(() => {})
     } catch (e) {
-      if (viewRef.current === view) setError(e.message || 'Something went wrong — is the backend running?')
+      if (viewRef.current === view) {
+        // Nothing was saved: take the question back out of the chat and put
+        // it in the box again, so it can be sent once the problem clears.
+        setMessages((prev) => prev.filter((m) => m !== pending))
+        setInput((current) => current || text)
+        setError(e.message || 'Something went wrong — is the backend running?')
+      }
     } finally {
       setSending(false)
       setPendingView(null)
@@ -195,7 +202,8 @@ export default function App() {
     setError('')
     setSending(true)
     const threadId = activeThread || newThreadId()
-    setMessages((prev) => [...prev, { role: 'user', content: 'Run a cluster health check', source: null }])
+    const pending = { role: 'user', content: 'Run a cluster health check', source: null }
+    setMessages((prev) => [...prev, pending])
     const view = viewRef.current
     setPendingView(view)
     try {
@@ -209,7 +217,10 @@ export default function App() {
       }
       setMessages((prev) => [...prev, { role: 'assistant', content: res.text, source: 'ops', citations: res.citations }])
     } catch (e) {
-      if (viewRef.current === view) setError(e.message || 'Health check failed')
+      if (viewRef.current === view) {
+        setMessages((prev) => prev.filter((m) => m !== pending))
+        setError(e.message || 'Health check failed')
+      }
     } finally {
       setSending(false)
       setPendingView(null)
