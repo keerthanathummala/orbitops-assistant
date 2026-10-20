@@ -8,24 +8,24 @@ the chat (RAG + GitHub/HackerNews agent) keeps working. This matches the
 explicit decision made while designing this project: "disable just the
 Google piece".
 
-State is persisted to a small JSON file so the counter survives backend
-restarts (otherwise a restart would silently reset a quota that Google's
-side has not actually reset).
+The counter is kept in the shared database (store.py), so every chat pod
+counts against the same 100 and a restart doesn't reset a quota that
+Google's side has not actually reset. It used to be a JSON file inside each
+pod, which let N pods make N x 100 searches.
 """
 
 from __future__ import annotations
 
-import json
 import os
 from datetime import datetime, timezone, timedelta
-from pathlib import Path
 from typing import Optional
 
 import httpx
 
+from . import store
+
 DAILY_LIMIT = 100
 PACIFIC_OFFSET_STD = timedelta(hours=-8)   # PST; good enough without a tz database dependency
-STATE_PATH = Path(__file__).resolve().parent / "google_quota_state.json"
 
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "")
 GOOGLE_CSE_ID = os.environ.get("GOOGLE_CSE_ID", "")
@@ -37,43 +37,19 @@ def _pacific_date_str(moment: Optional[datetime] = None) -> str:
     return pacific.strftime("%Y-%m-%d")
 
 
-def _load_state() -> dict:
-    if STATE_PATH.exists():
-        try:
-            return json.loads(STATE_PATH.read_text())
-        except Exception:
-            pass
-    return {"date": _pacific_date_str(), "count": 0}
-
-
-def _save_state(state: dict) -> None:
-    STATE_PATH.write_text(json.dumps(state))
-
-
-def _current_count() -> dict:
-    state = _load_state()
-    today = _pacific_date_str()
-    if state.get("date") != today:
-        state = {"date": today, "count": 0}
-        _save_state(state)
-    return state
-
-
 def quota_status() -> dict:
     """Used · limit for today's (Pacific) quota, and whether search is available."""
-    state = _current_count()
+    configured = bool(GOOGLE_API_KEY and GOOGLE_CSE_ID)
+    try:
+        used = store.google_quota_used(_pacific_date_str())
+    except Exception:
+        used = 0  # database briefly unavailable: don't fail the status pill
     return {
-        "used": state["count"],
+        "used": used,
         "limit": DAILY_LIMIT,
-        "available": state["count"] < DAILY_LIMIT and bool(GOOGLE_API_KEY and GOOGLE_CSE_ID),
-        "configured": bool(GOOGLE_API_KEY and GOOGLE_CSE_ID),
+        "available": used < DAILY_LIMIT and configured,
+        "configured": configured,
     }
-
-
-def _increment() -> None:
-    state = _current_count()
-    state["count"] += 1
-    _save_state(state)
 
 
 def search_google(query: str, max_results: int = 5) -> dict:
@@ -83,11 +59,18 @@ def search_google(query: str, max_results: int = 5) -> dict:
     Caller MUST check quota_status()/quota_exhausted before presenting results,
     and should fall back to RAG/GitHub/HackerNews when this tool is unavailable.
     """
-    status = quota_status()
-    if not status["configured"]:
+    if not (GOOGLE_API_KEY and GOOGLE_CSE_ID):
         return {"results": [], "error": "Google Search is not configured on this deployment.",
                 "quota_exhausted": False}
-    if not status["available"]:
+    # Reserve the search before making it, so pods can't overshoot the limit
+    # together; a request that fails gives its search back.
+    day = _pacific_date_str()
+    try:
+        reserved = store.google_quota_reserve(day, DAILY_LIMIT)
+    except Exception:
+        return {"results": [], "error": "Google Search is unavailable for a moment.",
+                "quota_exhausted": False}
+    if not reserved:
         return {"results": [], "error": "Daily Google Search quota reached — try again tomorrow.",
                 "quota_exhausted": True}
 
@@ -103,7 +86,6 @@ def search_google(query: str, max_results: int = 5) -> dict:
             timeout=10,
         )
         r.raise_for_status()
-        _increment()  # count the call only once it actually succeeds
         data = r.json()
         results = [
             {
@@ -115,7 +97,13 @@ def search_google(query: str, max_results: int = 5) -> dict:
         ]
         return {"results": results, "error": None, "quota_exhausted": False}
     except httpx.HTTPStatusError as e:
+        if e.response.status_code == 429:
+            store.google_quota_exhaust(day, DAILY_LIMIT)
+            return {"results": [], "error": "Daily Google Search quota reached — try again tomorrow.",
+                    "quota_exhausted": True}
+        store.google_quota_release(day)
         return {"results": [], "error": f"Google Search API error {e.response.status_code}",
                 "quota_exhausted": False}
     except Exception as e:
+        store.google_quota_release(day)
         return {"results": [], "error": str(e), "quota_exhausted": False}

@@ -17,11 +17,27 @@ SUPPORTED_EXTENSIONS = {".txt", ".md", ".docx", ".pdf"}
 
 
 def extract_text(filename: str, raw_bytes: bytes) -> str:
+    """The file's text. Raises ValueError (shown to the user as a 400) for an
+    unsupported type or a file that can't be read."""
     ext = Path(filename).suffix.lower()
+    if ext in (".docx", ".pdf"):
+        # A corrupt, encrypted or mislabelled file makes the parsers raise all
+        # sorts of errors; report it as unreadable rather than a 500.
+        try:
+            return _extract_document(ext, raw_bytes)
+        except Exception:
+            raise ValueError(f"Couldn't read {filename}: the file looks damaged or isn't a valid "
+                             f"{ext[1:].upper()} (password-protected files aren't supported).")
 
     if ext in (".txt", ".md"):
         return raw_bytes.decode("utf-8", errors="ignore")
 
+    raise ValueError(
+        f"Unsupported file type '{ext}'. Supported: {', '.join(sorted(SUPPORTED_EXTENSIONS))}"
+    )
+
+
+def _extract_document(ext: str, raw_bytes: bytes) -> str:
     if ext == ".docx":
         doc = DocxDocument(io.BytesIO(raw_bytes))
         parts = [p.text for p in doc.paragraphs if p.text.strip()]
@@ -37,7 +53,3 @@ def extract_text(filename: str, raw_bytes: bytes) -> str:
         reader = PdfReader(io.BytesIO(raw_bytes))
         pages = [page.extract_text() or "" for page in reader.pages]
         return "\n\n".join(p for p in pages if p.strip())
-
-    raise ValueError(
-        f"Unsupported file type '{ext}'. Supported: {', '.join(sorted(SUPPORTED_EXTENSIONS))}"
-    )

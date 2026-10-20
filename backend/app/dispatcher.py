@@ -53,16 +53,18 @@ def ops_available() -> bool:
     return available
 
 
-def ops_answer(thread_id: str, query: str) -> Optional[dict]:
+def ops_answer(thread_id: str, query: str, is_admin: bool = False) -> Optional[dict]:
     """The ops service's answer, or None if it can't be reached right now
     (restarting, rescheduled after a node drain), so the caller can answer
     from the runbooks instead."""
     global _ops_available
     if not OPS_SERVICE_URL:
-        return cluster_ops.ops_answer(query, rag_session=rag_core.get_or_create_session(thread_id))
+        return cluster_ops.ops_answer(query, rag_session=rag_core.get_or_create_session(thread_id),
+                                      include_logs=is_admin)
     try:
         r = httpx.post(f"{OPS_SERVICE_URL}/internal/ops/answer",
-                       json={"thread_id": thread_id, "query": query}, timeout=150)
+                       json={"thread_id": thread_id, "query": query, "include_logs": is_admin},
+                       timeout=150)
     except httpx.TransportError:
         _ops_available = (time.monotonic(), False)
         return None
@@ -118,7 +120,7 @@ def classify_query(query: str) -> Route:
     return "rag"
 
 
-def handle_message(thread_id: str, query: str) -> dict:
+def handle_message(thread_id: str, query: str, is_admin: bool = False) -> dict:
     """Runs the appropriate pipeline(s) and returns a display-ready result:
     {'route': 'rag'|'agent'|'both'|'ops', 'segments': [{'source', 'text', 'citations'}]}
     """
@@ -126,7 +128,7 @@ def handle_message(thread_id: str, query: str) -> dict:
     segments = []
 
     if route == "ops":
-        ops_result = ops_answer(thread_id, query)
+        ops_result = ops_answer(thread_id, query, is_admin=is_admin)
         if ops_result is None:
             route = "rag"  # ops service unreachable: answer from the runbooks
         else:
@@ -153,5 +155,9 @@ def handle_message(thread_id: str, query: str) -> dict:
 
 
 def docs_indexed_count(thread_id: str) -> int:
+    # A new chat isn't saved until its first message or upload; don't build
+    # an index just to count the base documents.
+    if not store.existing_thread_ids([thread_id]):
+        return rag_core.base_docs_count()
     session = rag_core.get_or_create_session(thread_id)
     return len(set(c.metadata["doc_id"] for c in session.chunks))

@@ -16,7 +16,7 @@ Security/safety measures (see guardrails.py, rate_limit.py for the "why"):
     is only readable by the account that created it.
   - thread_id format validation (must be a real UUID, not an arbitrary
     client-supplied string reaching Chroma/SQLite).
-  - Per-thread rate limiting on chat and upload.
+  - Per-account rate limiting on chat and upload.
   - Upload size cap.
   - CORS restricted to configured origins instead of "*".
 
@@ -30,7 +30,8 @@ import json
 import os
 from typing import List, Optional
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from . import auth
@@ -62,8 +63,10 @@ if not SPLIT_OPS:
     app.include_router(ops_api.router)
 
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5MB — generous for text/docx/pdf notes, not for abuse
-CHAT_RATE_LIMIT = (20, 60)      # 20 messages / 60s per thread
-UPLOAD_RATE_LIMIT = (10, 60)    # 10 uploads / 60s per thread
+# Per account, not per chat: starting a new chat for every message must not
+# get around the limit and use up the shared Gemini and Google quota.
+CHAT_RATE_LIMIT = (20, 60)      # 20 messages / 60s per account
+UPLOAD_RATE_LIMIT = (10, 60)    # 10 uploads / 60s per account
 
 
 @app.on_event("startup")
@@ -118,12 +121,12 @@ def chat(req: ChatRequest, user: dict = Depends(auth.current_user)):
         _require_own_thread(req.thread_id, user)
     thread_id = req.thread_id or store.new_thread_id()
 
-    if not check_rate_limit(f"chat:{thread_id}", *CHAT_RATE_LIMIT):
+    if not check_rate_limit(f"chat:{user['id']}", *CHAT_RATE_LIMIT):
         raise HTTPException(429, "Too many messages — slow down and try again shortly.")
 
     store.ensure_thread(thread_id, title_hint=req.message, user_id=user["id"])
     try:
-        result = dispatcher.handle_message(thread_id, req.message)
+        result = dispatcher.handle_message(thread_id, req.message, is_admin=user["is_admin"])
     except Exception as e:
         if llm.is_quota_error(e):
             raise HTTPException(429, llm.QUOTA_MESSAGE)
@@ -160,20 +163,37 @@ def thread_messages(thread_id: str, user: dict = Depends(auth.current_user)):
 # Document upload (max 10 per session, added on top of the base corpus)
 # ---------------------------------------------------------------------------
 
+@app.middleware("http")
+async def reject_oversized_uploads(request: Request, call_next):
+    """Turn away an upload that says it is too big before its body is read
+    and spooled; the size check in upload_document still catches one that
+    doesn't say. (nginx also caps request bodies at 6 MB.)"""
+    if request.url.path == "/api/upload":
+        try:
+            length = int(request.headers.get("content-length", "0"))
+        except ValueError:
+            length = 0
+        if length > MAX_UPLOAD_BYTES + 64 * 1024:  # room for the form fields
+            return JSONResponse(status_code=413, content={
+                "detail": f"File too large — {MAX_UPLOAD_BYTES // (1024*1024)}MB max."})
+    return await call_next(request)
+
+
 @app.post("/api/upload")
 async def upload_document(thread_id: str = Form(...), file: UploadFile = File(...),
                           user: dict = Depends(auth.current_user)):
     _require_own_thread(thread_id, user)
     store.ensure_thread(thread_id, title_hint=file.filename or "New chat", user_id=user["id"])
 
-    if not check_rate_limit(f"upload:{thread_id}", *UPLOAD_RATE_LIMIT):
+    if not check_rate_limit(f"upload:{user['id']}", *UPLOAD_RATE_LIMIT):
         raise HTTPException(429, "Too many uploads — slow down and try again shortly.")
 
     session = rag_core.get_or_create_session(thread_id)
     if session.uploaded_count >= rag_core.MAX_UPLOADS:
         raise HTTPException(400, f"Upload limit reached ({rag_core.MAX_UPLOADS} documents max).")
 
-    raw_bytes = await file.read()
+    # Read at most one byte past the limit rather than the whole file.
+    raw_bytes = await file.read(MAX_UPLOAD_BYTES + 1)
     if len(raw_bytes) > MAX_UPLOAD_BYTES:
         raise HTTPException(400, f"File too large — {MAX_UPLOAD_BYTES // (1024*1024)}MB max.")
 

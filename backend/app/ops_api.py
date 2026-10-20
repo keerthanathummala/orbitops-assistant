@@ -28,7 +28,7 @@ from . import rag_core
 from . import store
 from .rate_limit import check_rate_limit
 
-HEALTH_CHECK_RATE_LIMIT = (6, 60)  # each check reads the cluster + calls the LLM
+HEALTH_CHECK_RATE_LIMIT = (6, 60)  # per account; each check reads the cluster + calls the LLM
 
 router = APIRouter()
 
@@ -39,13 +39,14 @@ def ops_health_check(thread_id: str = Form(...), user: dict = Depends(auth.curre
     checks and has the LLM write an incident summary. The result is also
     saved into the chat so it stays in the conversation history."""
     common.require_own_thread(thread_id, user)
-    if not check_rate_limit(f"health:{thread_id}", *HEALTH_CHECK_RATE_LIMIT):
+    if not check_rate_limit(f"health:{user['id']}", *HEALTH_CHECK_RATE_LIMIT):
         raise HTTPException(429, "Too many health checks — try again shortly.")
 
+    store.ensure_thread(thread_id, title_hint="Cluster health check", user_id=user["id"])
     # The thread's session so runbooks the user uploaded are searched too.
     session = rag_core.get_or_create_session(thread_id)
     try:
-        result = cluster_ops.health_check(rag_session=session)
+        result = cluster_ops.health_check(rag_session=session, include_logs=user["is_admin"])
     except Exception as e:
         if llm.is_quota_error(e):
             raise HTTPException(429, llm.QUOTA_MESSAGE)
@@ -61,7 +62,6 @@ def ops_health_check(thread_id: str = Form(...), user: dict = Depends(auth.curre
     lines.append(result["summary"])
     text = "\n".join(lines)
 
-    store.ensure_thread(thread_id, title_hint="Cluster health check", user_id=user["id"])
     store.add_message(thread_id, "user", "Run a cluster health check")
     store.add_message(thread_id, "assistant", text, source="ops",
                       citations=json.dumps(result["citations"]) if result["citations"] else None)
@@ -79,6 +79,7 @@ def ops_health_check(thread_id: str = Form(...), user: dict = Depends(auth.curre
 class OpsQuestion(BaseModel):
     thread_id: str
     query: str = Field(..., max_length=guardrails.MAX_QUERY_LENGTH + 50)
+    include_logs: bool = False  # the chat service sets it for the admin only
 
 
 @router.get("/internal/ops/available")
@@ -89,9 +90,12 @@ def ops_available():
 @router.post("/internal/ops/answer")
 def ops_internal_answer(req: OpsQuestion):
     common.require_valid_thread_id(req.thread_id)
-    session = rag_core.get_or_create_session(req.thread_id)
     try:
-        return cluster_ops.ops_answer(req.query, rag_session=session)
+        session = rag_core.get_or_create_session(req.thread_id)
+    except LookupError:
+        raise HTTPException(404, "Chat not found.")
+    try:
+        return cluster_ops.ops_answer(req.query, rag_session=session, include_logs=req.include_logs)
     except Exception as e:
         if llm.is_quota_error(e):
             raise HTTPException(429, llm.QUOTA_MESSAGE)

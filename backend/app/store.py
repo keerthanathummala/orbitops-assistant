@@ -85,6 +85,11 @@ CREATE TABLE IF NOT EXISTS access_log (
     ip          TEXT,
     user_agent  TEXT,
     created_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS google_quota (
+    day         TEXT PRIMARY KEY,    -- Pacific date the Google quota resets on
+    used        INTEGER NOT NULL
 )
 """
 
@@ -143,6 +148,11 @@ CREATE TABLE IF NOT EXISTS access_log (
     user_agent  VARCHAR(255),
     created_at  VARCHAR(40) NOT NULL,
     INDEX idx_access_created (created_at)
+) CHARACTER SET utf8mb4;
+
+CREATE TABLE IF NOT EXISTS google_quota (
+    day         VARCHAR(10) PRIMARY KEY,
+    used        INT NOT NULL
 ) CHARACTER SET utf8mb4
 """
 
@@ -289,13 +299,15 @@ def new_thread_id() -> str:
 
 
 def ensure_thread(thread_id: str, title_hint: str = "New chat", user_id: Optional[int] = None) -> None:
+    # One statement, so a chat's first message and an upload arriving
+    # together can't both try to insert it and have one fail.
+    conflict = ("ON DUPLICATE KEY UPDATE thread_id = thread_id" if MYSQL_HOST
+                else "ON CONFLICT(thread_id) DO NOTHING")
     with _conn() as conn:
-        row = conn.execute("SELECT thread_id FROM threads WHERE thread_id = ?", (thread_id,)).fetchone()
-        if row is None:
-            conn.execute(
-                "INSERT INTO threads (thread_id, title, created_at, user_id) VALUES (?, ?, ?, ?)",
-                (thread_id, title_hint[:60], _now(), user_id),
-            )
+        conn.execute(
+            "INSERT INTO threads (thread_id, title, created_at, user_id) VALUES (?, ?, ?, ?) " + conflict,
+            (thread_id, title_hint[:60], _now(), user_id),
+        )
 
 
 def thread_owner(thread_id: str):
@@ -401,20 +413,21 @@ def get_agent_history(thread_id: str, max_turns: int = 10) -> List[dict]:
 # Uploaded documents (extracted text), shared by every backend replica
 # ---------------------------------------------------------------------------
 
-def add_upload(thread_id: str, filename: str, content: str) -> None:
+def add_upload_if_room(thread_id: str, filename: str, content: str, max_uploads: int) -> bool:
+    """Adds the upload unless the chat already has max_uploads; False if
+    full. On MySQL the chat's row is locked first, so uploads to one chat
+    are counted one at a time; SQLite runs one write at a time anyway."""
     with _conn() as conn:
+        if conn.mysql:
+            conn.execute("SELECT thread_id FROM threads WHERE thread_id = ? FOR UPDATE", (thread_id,))
+        row = conn.execute("SELECT COUNT(*) AS c FROM uploads WHERE thread_id = ?", (thread_id,)).fetchone()
+        if int(row["c"]) >= max_uploads:
+            return False
         conn.execute(
             "INSERT INTO uploads (thread_id, filename, content, created_at) VALUES (?, ?, ?, ?)",
             (thread_id, filename[:255], content, datetime.now(timezone.utc).isoformat()),
         )
-
-
-def count_uploads(thread_id: str) -> int:
-    with _conn() as conn:
-        row = conn.execute(
-            "SELECT COUNT(*) AS c FROM uploads WHERE thread_id = ?", (thread_id,)
-        ).fetchone()
-        return int(row["c"])
+        return True
 
 
 def get_upload_ids(thread_id: str) -> List[int]:
@@ -480,6 +493,9 @@ def upsert_admin(username: str, password_hash: str) -> None:
 
 def create_session(token_hash: str, user_id: int, expires_at: str) -> None:
     with _conn() as conn:
+        # Clear out expired sign-ins while we're here, so the table doesn't
+        # grow forever. (Timestamps are UTC ISO strings, which sort as text.)
+        conn.execute("DELETE FROM sessions WHERE expires_at < ?", (_now(),))
         conn.execute(
             "INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
             (token_hash, user_id, _now(), expires_at),
@@ -553,3 +569,37 @@ def delete_user(user_id: int) -> List[str]:
         conn.execute("UPDATE access_log SET user_id = NULL WHERE user_id = ?", (user_id,))
         conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
         return thread_ids
+
+
+# ---------------------------------------------------------------------------
+# Google Search daily quota, shared by every pod (see google_search.py)
+# ---------------------------------------------------------------------------
+
+def google_quota_used(day: str) -> int:
+    with _conn() as conn:
+        row = conn.execute("SELECT used FROM google_quota WHERE day = ?", (day,)).fetchone()
+        return row["used"] if row is not None else 0
+
+
+def google_quota_reserve(day: str, limit: int) -> bool:
+    """Takes one search from today's quota; False once it is used up. A
+    single conditional update, so pods racing for the last search can't
+    both get it."""
+    conflict = "ON DUPLICATE KEY UPDATE day = day" if MYSQL_HOST else "ON CONFLICT(day) DO NOTHING"
+    with _conn() as conn:
+        conn.execute("INSERT INTO google_quota (day, used) VALUES (?, 0) " + conflict, (day,))
+        cur = conn.execute("UPDATE google_quota SET used = used + 1 WHERE day = ? AND used < ?",
+                           (day, limit))
+        return cur.rowcount == 1
+
+
+def google_quota_release(day: str) -> None:
+    """Gives back a reserved search whose request failed."""
+    with _conn() as conn:
+        conn.execute("UPDATE google_quota SET used = used - 1 WHERE day = ? AND used > 0", (day,))
+
+
+def google_quota_exhaust(day: str, limit: int) -> None:
+    """Google said the quota is gone (HTTP 429): stop trying until tomorrow."""
+    with _conn() as conn:
+        conn.execute("UPDATE google_quota SET used = ? WHERE day = ?", (limit, day))

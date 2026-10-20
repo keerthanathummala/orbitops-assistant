@@ -110,8 +110,9 @@ nothing has to build during the demo.
 | 2:40 | Rolling update and rollback | `./commands.sh demo-update`, then `demo-rollback` | pods replaced one at a time with no downtime; footer shows `version v2`, then `v1` again |
 | 3:20 | AIOps incident | `./commands.sh demo-incident`, click **Run health check**, then `demo-recover` | the ops service flags the stuck rollout (ImagePullBackOff), explains it with the runbook and suggests `rollout undo`; after the undo it reports Healthy |
 
-If there is time left: ask "why did the backend pod restart?" (an ops
-answer from live pods and logs), show the admin page (sign-in times and
+If there is time left: ask "why did the backend pod restart?" while signed
+in as the admin (an ops answer from live pods and logs; other accounts get
+the pod state without logs), show the admin page (sign-in times and
 IPs, no chats), or `kubectl -n orbitops delete pod mysql-0` to show chats
 survive a database restart.
 

@@ -66,9 +66,29 @@ def _check_redis(key: str, max_requests: int, window_seconds: int) -> bool:
     return count <= max_requests
 
 
+SWEEP_EVERY = 60          # seconds between clean-ups of idle keys
+_last_sweep = 0.0
+_longest_window = 0
+
+
+def _sweep(now: float) -> None:
+    """Forget keys with no hits inside the longest window in use, so the
+    in-memory counts don't keep one entry per user/IP forever."""
+    global _last_sweep
+    if now - _last_sweep < SWEEP_EVERY:
+        return
+    _last_sweep = now
+    cutoff = now - _longest_window
+    for key in [k for k, b in _hits.items() if not b or b[-1] < cutoff]:
+        del _hits[key]
+
+
 def _check_memory(key: str, max_requests: int, window_seconds: int) -> bool:
+    global _longest_window
     now = time.monotonic()
     with _lock:
+        _longest_window = max(_longest_window, window_seconds)
+        _sweep(now)
         bucket = _hits[key]
         cutoff = now - window_seconds
         while bucket and bucket[0] < cutoff:
