@@ -493,6 +493,9 @@ def upsert_admin(username: str, password_hash: str) -> None:
 
 def create_session(token_hash: str, user_id: int, expires_at: str) -> None:
     with _conn() as conn:
+        # Clear out expired sign-ins while we're here, so the table doesn't
+        # grow forever. (Timestamps are UTC ISO strings, which sort as text.)
+        conn.execute("DELETE FROM sessions WHERE expires_at < ?", (_now(),))
         conn.execute(
             "INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
             (token_hash, user_id, _now(), expires_at),
