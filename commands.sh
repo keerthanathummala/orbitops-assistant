@@ -20,7 +20,10 @@ ZONE="$REGION-a"
 REG="$REGION-docker.pkg.dev/$PROJECT_ID/orbitops"
 NS=orbitops
 
-cd "$(dirname "$0")"
+# Work from the repository root whatever folder this is run from; remember
+# the script's own full path for the help text below.
+SCRIPT="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+cd "$(dirname "$SCRIPT")"
 
 # The manifests say PROJECT_ID where the registry path goes; fill it in while
 # applying so the files in the repository stay unchanged.
@@ -204,6 +207,6 @@ cleanup)
 
 *)
   # No or unknown step: show the list at the top of this file.
-  sed -n '2,14p' "$0"
+  sed -n '2,/^set /{/^#/p}' "$SCRIPT"
   ;;
 esac
