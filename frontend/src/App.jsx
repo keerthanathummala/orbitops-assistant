@@ -101,6 +101,11 @@ export default function App() {
   useEffect(() => {
     if (getToken()) checkSession()
     const onSignedOut = () => {
+      // Nothing from the previous account stays on screen.
+      setError('')
+      setMessages([])
+      setUploads([])
+      setStatus({ docs_indexed: 0, google_search: null })
       setUser(null)
       setView('chat')
       setThreads([])
@@ -216,7 +221,7 @@ export default function App() {
         // it in the box again, so it can be sent once the problem clears.
         setMessages((prev) => prev.filter((m) => m !== pending))
         setInput((current) => current || text)
-        setError(e.message || 'Something went wrong — is the backend running?')
+        setError(e.message || 'Something went wrong. Please try again.')
       }
     } finally {
       setSending(false)
@@ -335,7 +340,7 @@ export default function App() {
     )
   }
   if (!user) {
-    return <AuthPage onSignedIn={(u) => { setUser(u); setActiveThread(null); writeStored(ACTIVE_THREAD_KEY, null) }} />
+    return <AuthPage onSignedIn={(u) => { setError(''); setUser(u); setActiveThread(null); writeStored(ACTIVE_THREAD_KEY, null) }} />
   }
   if (view === 'admin' && user.is_admin) {
     return <AdminPage onBack={() => setView('chat')} />

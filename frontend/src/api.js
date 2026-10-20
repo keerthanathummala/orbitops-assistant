@@ -25,6 +25,15 @@ function setToken(token) {
   }
 }
 
+// Shown when a proxy error page (no JSON detail) comes back.
+const STATUS_MESSAGES = {
+  413: 'That file is too large (5 MB max).',
+  429: 'Too many requests. Please wait a moment and try again.',
+  502: 'The service is restarting or busy. Please try again in a moment.',
+  503: 'The service is restarting or busy. Please try again in a moment.',
+  504: 'The answer took too long. Try again, or ask a shorter question.',
+}
+
 // Every call carries the session token. A 401 means it expired or the
 // account was deleted, so App listens for this event and shows sign-in.
 async function request(path, { method = 'GET', json, form } = {}) {
@@ -38,7 +47,15 @@ async function request(path, { method = 'GET', json, form } = {}) {
   } else if (form) {
     body = form
   }
-  const res = await fetch(`${API_BASE}${path}`, { method, headers, body })
+  let res
+  try {
+    res = await fetch(`${API_BASE}${path}`, { method, headers, body })
+  } catch {
+    // fetch only throws when no response arrived at all.
+    const err = new Error("Can't reach the server. Check your connection and try again.")
+    err.status = 0
+    throw err
+  }
   if (res.status === 401 && token) {
     setToken(null)
     window.dispatchEvent(new Event('orbitops-signed-out'))
@@ -50,7 +67,7 @@ async function request(path, { method = 'GET', json, form } = {}) {
     } catch {
       // Not JSON (e.g. nginx error page).
     }
-    const err = new Error(detail || `Request failed (${res.status})`)
+    const err = new Error(detail || STATUS_MESSAGES[res.status] || `Request failed (${res.status})`)
     err.status = res.status
     throw err
   }
