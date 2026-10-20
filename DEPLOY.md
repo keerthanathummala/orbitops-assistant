@@ -25,7 +25,10 @@ or replaced (rolling update) without losing accounts, chats or uploads.
 Every Deployment spreads its replicas across nodes
 (`topologySpreadConstraints`), and frontend, backend and auth each have a
 PodDisruptionBudget (`minAvailable: 1`), so draining a node (a GKE upgrade,
-or the node-failure demo) never takes a whole service down.
+or the node-failure demo) never takes all their pods down at once. Ops,
+MySQL, Chroma and Redis have one pod each and no budget: if their node is
+drained they restart on another node, and sign-in, chat or cluster questions
+(depending on which one moved) pause for about a minute.
 
 Every command below is also in [`commands.sh`](commands.sh), one step at a
 time and with a comment on each command: `./commands.sh setup`, `build`,
@@ -106,7 +109,7 @@ nothing has to build during the demo.
 | 0:00 | Microservices | `./commands.sh demo-services` | frontend, backend (chat), auth and ops Deployments plus MySQL, Chroma and Redis, each with its own Service, spread over both nodes |
 | 0:30 | Load balancing | `./commands.sh demo-lb`, and refresh the app | `pod` in the replies and the footer changes between backend pods |
 | 0:50 | Autoscaling | `./commands.sh demo-scale` (Ctrl+C after the jump), then `demo-scale-stop` | 3 load pods × 4 loops push CPU past 60%; replicas climb from 2 towards 5, and the cluster adds a node if they don't fit |
-| 1:50 | Node failure / self-healing | `./commands.sh demo-node-failure` | a node is drained; its pods are recreated on the other node, the disruption budgets keep one of each running, and the app keeps answering during it |
+| 1:50 | Node failure / self-healing | `./commands.sh demo-node-failure` | a node is drained; its pods are recreated on the other node, and the disruption budgets keep one frontend, chat and auth pod running, so the app keeps answering (the step picks a node without MySQL or Chroma when it can) |
 | 2:40 | Rolling update and rollback | `./commands.sh demo-update`, then `demo-rollback` | pods replaced one at a time with no downtime; footer shows `version v2`, then `v1` again |
 | 3:20 | AIOps incident | `./commands.sh demo-incident`, click **Run health check**, then `demo-recover` | the ops service flags the stuck rollout (ImagePullBackOff), explains it with the runbook and suggests `rollout undo`; after the undo it reports Healthy |
 

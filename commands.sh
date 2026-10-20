@@ -97,7 +97,7 @@ status)
   kubectl -n $NS get deploy,sts,svc,pods -o wide
   # Current and target CPU and replica counts of the autoscalers.
   kubectl -n $NS get hpa
-  # Disruption budgets: how many pods of each service may be taken down at once.
+  # Disruption budgets (frontend, chat, auth): how many pods may be taken down at once.
   kubectl -n $NS get pdb
   ;;
 
@@ -151,8 +151,10 @@ demo-node-failure)
   fi
   echo "Taking node $NODE out of service"
   # Mark the node unschedulable and evict its pods, as a node failure or GKE
-  # upgrade would. The disruption budgets keep at least one pod of each
-  # service running, so the app stays up while pods move to the other node.
+  # upgrade would. The disruption budgets keep at least one frontend, chat
+  # and auth pod running, so the app stays up while pods move to the other
+  # node. (Ops, MySQL, Chroma and Redis have one pod each; any on this node
+  # restart elsewhere, which is why the step avoids MySQL's and Chroma's node.)
   # Drain gives up after 2.5 minutes rather than holding up the demo if a
   # replacement pod can't find room; the node is uncordoned either way.
   kubectl drain "$NODE" --ignore-daemonsets --delete-emptydir-data --timeout=150s \
