@@ -12,13 +12,28 @@ const THEME_KEY = 'orbitops_theme'
 const THEME_LABELS = { system: 'Theme · auto', light: 'Theme · light', dark: 'Theme · dark' }
 const NEXT_THEME = { system: 'light', light: 'dark', dark: 'system' }
 
-function loadTheme() {
+// Site storage can be blocked (strict privacy settings); the app then just
+// forgets the open chat and theme on reload instead of failing to start.
+function readStored(key) {
   try {
-    const t = localStorage.getItem(THEME_KEY)
-    return t === 'light' || t === 'dark' ? t : 'system'
+    return localStorage.getItem(key)
   } catch {
-    return 'system'
+    return null
   }
+}
+
+function writeStored(key, value) {
+  try {
+    if (value) localStorage.setItem(key, value)
+    else localStorage.removeItem(key)
+  } catch {
+    // Storage blocked: nothing to remember it in.
+  }
+}
+
+function loadTheme() {
+  const t = readStored(THEME_KEY)
+  return t === 'light' || t === 'dark' ? t : 'system'
 }
 
 // crypto.randomUUID() only exists on HTTPS/localhost, and the GKE load
@@ -36,9 +51,13 @@ export default function App() {
   // Signed-in account; authChecked is false until a saved session has been verified.
   const [user, setUser] = useState(null)
   const [authChecked, setAuthChecked] = useState(!getToken())
+  // Set when the saved session couldn't be checked (server unreachable, not
+  // a 401), so the page offers a retry instead of a sign-in form that would
+  // leave the old token in place.
+  const [authError, setAuthError] = useState('')
   const [view, setView] = useState('chat')
   const [threads, setThreads] = useState([])
-  const [activeThread, setActiveThread] = useState(localStorage.getItem(ACTIVE_THREAD_KEY) || null)
+  const [activeThread, setActiveThread] = useState(() => readStored(ACTIVE_THREAD_KEY) || null)
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
@@ -46,6 +65,8 @@ export default function App() {
   // Files uploaded to the active chat: [{id, filename}], each removable.
   const [uploads, setUploads] = useState([])
   const uploadedCount = uploads.length
+  // The file being uploaded and the view it was attached in, while it uploads.
+  const [uploading, setUploading] = useState(null)
   const [error, setError] = useState('')
   // Which backend pod/version answered last -- makes load balancing and
   // rolling updates visible when demoing the Kubernetes deployment.
@@ -54,19 +75,42 @@ export default function App() {
   const [theme, setTheme] = useState(loadTheme)
   const fileInputRef = useRef(null)
   const scrollRef = useRef(null)
+  const endRef = useRef(null)
+  // Bumped whenever the user opens another chat or starts a new one. A reply
+  // that arrives after that belongs to the chat it was sent from, which
+  // loads it from the server when reopened, so it isn't added to this view.
+  const viewRef = useRef(0)
+  const [viewId, setViewId] = useState(0)
+  // The view a request is waiting on, so "Thinking…" shows only there.
+  const [pendingView, setPendingView] = useState(null)
+  // A chat that was just created by sending from "New chat": its messages are
+  // already on screen, so opening it doesn't reload them.
+  const justCreatedRef = useRef(null)
 
   // Resume a saved session, and drop back to sign-in whenever the API says
   // the session is gone (expired, signed out elsewhere, or account deleted).
+  function checkSession() {
+    fetchMe()
+      .then((u) => { setUser(u); setAuthChecked(true) })
+      .catch((e) => {
+        if (e.status === 401) setAuthChecked(true)  // api.js has cleared the token
+        else setAuthError(e.message || 'The server could not be reached.')
+      })
+  }
+
   useEffect(() => {
-    if (getToken()) {
-      fetchMe().then(setUser).catch(() => {}).finally(() => setAuthChecked(true))
-    }
+    if (getToken()) checkSession()
     const onSignedOut = () => {
+      // Nothing from the previous account stays on screen.
+      setError('')
+      setMessages([])
+      setUploads([])
+      setStatus({ docs_indexed: 0, google_search: null })
       setUser(null)
       setView('chat')
       setThreads([])
       setActiveThread(null)
-      localStorage.removeItem(ACTIVE_THREAD_KEY)
+      writeStored(ACTIVE_THREAD_KEY, null)
     }
     window.addEventListener('orbitops-signed-out', onSignedOut)
     return () => window.removeEventListener('orbitops-signed-out', onSignedOut)
@@ -90,9 +134,21 @@ export default function App() {
       setUploads([])
       return
     }
-    fetchThreadMessages(activeThread).then(setMessages).catch(() => {})
-    fetchUploads(activeThread).then(setUploads).catch(() => {})
-    fetchStatus(activeThread).then((s) => s && setStatus(s)).catch(() => {})
+    // Responses for a chat the user has already left are ignored, so a slow
+    // load of chat A can't overwrite chat B after a quick switch.
+    let current = true
+    if (justCreatedRef.current === activeThread) {
+      justCreatedRef.current = null
+    } else {
+      setMessages([])
+      setUploads([])
+      fetchThreadMessages(activeThread)
+        .then((m) => { if (current) setMessages(m) })
+        .catch((e) => { if (current) setError(`Couldn't load this chat: ${e.message}`) })
+    }
+    fetchUploads(activeThread).then((u) => { if (current) setUploads(u) }).catch(() => {})
+    fetchStatus(activeThread).then((s) => { if (current && s) setStatus(s) }).catch(() => {})
+    return () => { current = false }
   }, [activeThread, user])
 
   useEffect(() => {
@@ -102,31 +158,37 @@ export default function App() {
   useEffect(() => {
     if (theme === 'system') delete document.documentElement.dataset.theme
     else document.documentElement.dataset.theme = theme
-    try {
-      if (theme === 'system') localStorage.removeItem(THEME_KEY)
-      else localStorage.setItem(THEME_KEY, theme)
-    } catch {
-      // Storage blocked: the choice just won't survive a reload.
-    }
+    writeStored(THEME_KEY, theme === 'system' ? null : theme)
   }, [theme])
 
+  // Keep the newest message (and the "Thinking…" line) in view. On a narrow
+  // screen the whole page scrolls instead, so go to its end, where the input is.
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
-  }, [messages])
+    const page = document.scrollingElement
+    if (page && page.scrollHeight > window.innerHeight) {
+      window.scrollTo({ top: page.scrollHeight, behavior: 'smooth' })
+    } else {
+      endRef.current?.scrollIntoView({ block: 'end', behavior: 'smooth' })
+    }
+  }, [messages, sending, error])
 
   function persistActiveThread(id) {
+    viewRef.current += 1
+    setViewId(viewRef.current)
     setActiveThread(id)
-    if (id) localStorage.setItem(ACTIVE_THREAD_KEY, id)
-    else localStorage.removeItem(ACTIVE_THREAD_KEY)
+    writeStored(ACTIVE_THREAD_KEY, id)
   }
 
   function handleNewChat() {
     persistActiveThread(null)
+    setMessages([])
     setInput('')
     setError('')
   }
 
   function handleSelectThread(id) {
+    if (id === activeThread) return
+    setError('')
     persistActiveThread(id)
   }
 
@@ -136,22 +198,34 @@ export default function App() {
     setError('')
     setSending(true)
     setInput('')
-    setMessages((prev) => [...prev, { role: 'user', content: text, source: null }])
+    const pending = { role: 'user', content: text, source: null }
+    setMessages((prev) => [...prev, pending])
+    const view = viewRef.current
+    setPendingView(view)
 
     try {
       const res = await sendChat(activeThread, text)
-      if (!activeThread) persistActiveThread(res.thread_id)
       refreshThreads()
-      setMessages((prev) => [
-        ...prev,
-        ...res.segments.map((seg) => ({ role: 'assistant', content: seg.text, source: seg.source, citations: seg.citations })),
-      ])
-      fetchStatus(res.thread_id).then((s) => s && setStatus(s)).catch(() => {})
       fetchHealth().then(setServed).catch(() => {})
+      if (viewRef.current !== view) return  // the user moved to another chat meanwhile
+      const reply = res.segments.map((seg) => ({ role: 'assistant', content: seg.text, source: seg.source, citations: seg.citations }))
+      if (!activeThread) {
+        justCreatedRef.current = res.thread_id
+        persistActiveThread(res.thread_id)
+      }
+      setMessages((prev) => [...prev, ...reply])
+      fetchStatus(res.thread_id).then((s) => s && setStatus(s)).catch(() => {})
     } catch (e) {
-      setError(e.message || 'Something went wrong — is the backend running?')
+      if (viewRef.current === view) {
+        // Nothing was saved: take the question back out of the chat and put
+        // it in the box again, so it can be sent once the problem clears.
+        setMessages((prev) => prev.filter((m) => m !== pending))
+        setInput((current) => current || text)
+        setError(e.message || 'Something went wrong. Please try again.')
+      }
     } finally {
       setSending(false)
+      setPendingView(null)
     }
   }
 
@@ -161,24 +235,35 @@ export default function App() {
     setError('')
     setSending(true)
     const threadId = activeThread || newThreadId()
-    setMessages((prev) => [...prev, { role: 'user', content: 'Run a cluster health check', source: null }])
+    const pending = { role: 'user', content: 'Run a cluster health check', source: null }
+    setMessages((prev) => [...prev, pending])
+    const view = viewRef.current
+    setPendingView(view)
     try {
       const res = await runHealthCheck(threadId)
-      if (!activeThread) persistActiveThread(threadId)
       refreshThreads()
-      setMessages((prev) => [...prev, { role: 'assistant', content: res.text, source: 'ops', citations: res.citations }])
       fetchHealth().then(setServed).catch(() => {})
+      if (viewRef.current !== view) return
+      if (!activeThread) {
+        justCreatedRef.current = threadId
+        persistActiveThread(threadId)
+      }
+      setMessages((prev) => [...prev, { role: 'assistant', content: res.text, source: 'ops', citations: res.citations }])
     } catch (e) {
-      setError(e.message || 'Health check failed')
+      if (viewRef.current === view) {
+        setMessages((prev) => prev.filter((m) => m !== pending))
+        setError(e.message || 'Health check failed')
+      }
     } finally {
       setSending(false)
+      setPendingView(null)
     }
   }
 
   async function handleFileChange(e) {
     const file = e.target.files?.[0]
     e.target.value = ''
-    if (!file) return
+    if (!file || uploading) return
     if (uploadedCount >= MAX_UPLOADS) {
       setError(`Upload limit reached (${MAX_UPLOADS} documents max).`)
       return
@@ -190,12 +275,20 @@ export default function App() {
       setError('Send your first message before attaching documents.')
       return
     }
+    const view = viewRef.current
+    setError('')
+    setUploading({ name: file.name, view })
     try {
       await uploadDocument(threadId, file)
-      fetchUploads(threadId).then(setUploads).catch(() => {})
-      fetchStatus(threadId).then((s) => s && setStatus(s)).catch(() => {})
+      // If the user has opened another chat, that chat's own list is shown;
+      // this one picks the file up when reopened.
+      if (viewRef.current !== view) return
+      fetchUploads(threadId).then((u) => { if (viewRef.current === view) setUploads(u) }).catch(() => {})
+      fetchStatus(threadId).then((s) => { if (viewRef.current === view && s) setStatus(s) }).catch(() => {})
     } catch (err) {
-      setError(err.message)
+      if (viewRef.current === view) setError(err.message)
+    } finally {
+      setUploading(null)
     }
   }
 
@@ -228,18 +321,38 @@ export default function App() {
   if (!started) {
     return <CoverPage onContinue={() => setStarted(true)} />
   }
-  if (!authChecked) return null
+  if (!authChecked) {
+    return (
+      <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 14, background: colors.bluebg, fontFamily: fonts.body, color: colors.textMain, padding: '24px 16px', textAlign: 'center' }}>
+        {authError ? (
+          <>
+            <div role="alert" style={{ fontSize: 15, maxWidth: 420, lineHeight: 1.5 }}>
+              Couldn't check your sign-in: {authError}
+            </div>
+            <button onClick={() => { setAuthError(''); checkSession() }} style={{ background: colors.accent, color: colors.accentText, border: 'none', fontFamily: 'inherit', fontWeight: 500, fontSize: 14, padding: '10px 18px', borderRadius: 8, cursor: 'pointer' }}>
+              Try again
+            </button>
+          </>
+        ) : (
+          <div role="status" style={{ fontSize: 14, color: colors.textMuted }}>Checking your sign-in…</div>
+        )}
+      </div>
+    )
+  }
   if (!user) {
-    return <AuthPage onSignedIn={(u) => { setUser(u); setActiveThread(null); localStorage.removeItem(ACTIVE_THREAD_KEY) }} />
+    return <AuthPage onSignedIn={(u) => { setError(''); setUser(u); setActiveThread(null); writeStored(ACTIVE_THREAD_KEY, null) }} />
   }
   if (view === 'admin' && user.is_admin) {
     return <AdminPage onBack={() => setView('chat')} />
   }
 
   return (
-    <div style={{ minHeight: '100vh', width: '100%', display: 'flex', flexWrap: 'wrap', fontFamily: fonts.body, background: colors.bluebg, color: colors.textMain }}>
+    // The page itself never scrolls on a wide screen: the chat list and the
+    // messages scroll inside their columns, so the input box stays in view
+    // (on a narrow screen the columns stack and the page scrolls; theme.js).
+    <div className="app-shell" style={{ width: '100%', display: 'flex', flexWrap: 'wrap', fontFamily: fonts.body, background: colors.bluebg, color: colors.textMain }}>
       {/* Sidebar */}
-      <div style={{ width: 272, flex: '0 0 272px', background: colors.sidebarBg, borderRight: `1px solid ${colors.border}`, display: 'flex', flexDirection: 'column', padding: '24px 18px' }}>
+      <div className="app-side" style={{ width: 272, flex: '0 0 272px', background: colors.sidebarBg, borderRight: `1px solid ${colors.border}`, display: 'flex', flexDirection: 'column', padding: '24px 18px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '0 6px 22px', borderBottom: `1px solid ${colors.borderSoft}`, marginBottom: 18 }}>
           <div style={{ width: 30, height: 30, borderRadius: 8, background: colors.accent, flexShrink: 0 }} />
           <div>
@@ -258,7 +371,7 @@ export default function App() {
         <div style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', color: colors.textMuted, padding: '0 6px 10px' }}>
           Your chats
         </div>
-        <div style={{ overflowY: 'auto', flex: 1 }}>
+        <div style={{ overflowY: 'auto', flex: 1, minHeight: 0 }}>
           {threads.length === 0 && (
             <div style={{ fontSize: 13, color: colors.textFaint, padding: '0 10px' }}>No chats yet</div>
           )}
@@ -266,6 +379,7 @@ export default function App() {
             <a
               key={t.thread_id}
               href="#"
+              aria-current={t.thread_id === activeThread ? 'page' : undefined}
               onClick={(e) => { e.preventDefault(); handleSelectThread(t.thread_id) }}
               style={{
                 display: 'block', padding: '10px 10px', borderRadius: 7, fontSize: 13.5,
@@ -296,7 +410,7 @@ export default function App() {
       </div>
 
       {/* Main column */}
-      <div style={{ flex: '999 1 560px', minWidth: 0, display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
+      <div className="app-main" style={{ flex: '999 1 560px', minWidth: 0, display: 'flex', flexDirection: 'column' }}>
         {/* Top bar */}
         <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end', gap: 12, padding: '18px 32px', borderBottom: `1px solid ${colors.border}`, background: colors.sidebarBg }}>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -324,7 +438,7 @@ export default function App() {
         </div>
 
         {/* Messages */}
-        <div ref={scrollRef} style={{ flex: '1 1 auto', padding: '32px 10% 20px', display: 'flex', flexDirection: 'column', gap: 22, overflowY: 'auto' }}>
+        <div ref={scrollRef} style={{ flex: '1 1 auto', minHeight: 0, padding: '32px 10% 20px', display: 'flex', flexDirection: 'column', gap: 22, overflowY: 'auto' }}>
           {messages.length === 0 && (
             <div style={{ color: colors.textFaint, fontSize: 14, textAlign: 'center', marginTop: 40 }}>
               Ask about OrbitOps docs, GitHub &amp; HackerNews, or the live cluster (pods, restarts, logs).
@@ -361,19 +475,25 @@ export default function App() {
               </div>
             )
           )}
-          {sending && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, paddingLeft: 2 }}>
+          {sending && pendingView === viewId && (
+            <div role="status" style={{ display: 'flex', alignItems: 'center', gap: 6, paddingLeft: 2 }}>
               <div style={{ width: 5, height: 5, borderRadius: '50%', background: colors.dot }} />
               <div style={{ width: 5, height: 5, borderRadius: '50%', background: colors.dot }} />
               <div style={{ width: 5, height: 5, borderRadius: '50%', background: colors.dot }} />
               <span style={{ fontSize: 11.5, color: colors.textMuted, marginLeft: 2 }}>Thinking…</span>
             </div>
           )}
-          {error && <div style={{ color: colors.error, fontSize: 13 }}>{error}</div>}
+          {error && <div role="alert" style={{ color: colors.error, fontSize: 13 }}>{error}</div>}
+          <div ref={endRef} />
         </div>
 
         {/* Input bar */}
         <div style={{ padding: '16px 10% 26px' }}>
+          {uploading && uploading.view === viewId && (
+            <div role="status" style={{ fontSize: 12.5, color: colors.textMuted, marginBottom: 8 }}>
+              Uploading {uploading.name}… large PDFs can take a minute to index.
+            </div>
+          )}
           {uploads.length > 0 && (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
               {uploads.map((u) => (
@@ -391,28 +511,31 @@ export default function App() {
               ))}
             </div>
           )}
-          <div style={{ background: colors.white, border: `1px solid ${colors.border}`, borderRadius: 14, padding: '10px 10px 10px 18px', display: 'flex', alignItems: 'center', gap: 10, boxShadow: '0 1px 2px rgba(28,42,56,0.05)' }}>
+          <div className="chat-box" style={{ background: colors.white, border: `1px solid ${colors.border}`, borderRadius: 14, padding: '10px 10px 10px 18px', display: 'flex', alignItems: 'center', gap: 10, boxShadow: '0 1px 2px rgba(28,42,56,0.05)' }}>
             <input
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() } }}
               placeholder="Ask about OrbitOps docs, GitHub & HackerNews, or the live cluster…"
+              aria-label="Message"
               style={{ flex: '1 1 auto', fontSize: 14.5, color: colors.textMain, border: 'none', outline: 'none', fontFamily: fonts.body, background: 'transparent' }}
             />
-            <input type="file" ref={fileInputRef} style={{ display: 'none' }} onChange={handleFileChange} accept=".txt,.md,.docx,.pdf" />
+            <input type="file" ref={fileInputRef} style={{ display: 'none' }} aria-hidden="true" tabIndex={-1} onChange={handleFileChange} accept=".txt,.md,.docx,.pdf" />
             <button
               onClick={() => fileInputRef.current?.click()}
-              disabled={uploadedCount >= MAX_UPLOADS}
-              style={{ fontSize: 12.5, fontWeight: 500, color: colors.textSecondary, background: colors.bluebg, border: `1px solid ${colors.border}`, borderRadius: 8, padding: '8px 12px', cursor: 'pointer', whiteSpace: 'nowrap' }}
+              disabled={uploadedCount >= MAX_UPLOADS || uploading !== null}
+              style={{ fontSize: 12.5, fontWeight: 500, color: colors.textSecondary, background: colors.bluebg, border: `1px solid ${colors.border}`, borderRadius: 8, padding: '8px 12px', cursor: uploading ? 'default' : 'pointer', opacity: uploading ? 0.6 : 1, whiteSpace: 'nowrap' }}
             >
-              Attach · {uploadedCount}/{MAX_UPLOADS}
+              {uploading ? 'Uploading…' : `Attach · ${uploadedCount}/${MAX_UPLOADS}`}
             </button>
             <button
               onClick={handleSend}
               disabled={sending || !input.trim()}
+              aria-label="Send message"
+              title="Send"
               style={{ width: 38, height: 38, flexShrink: 0, borderRadius: 10, background: colors.accent, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: sending || !input.trim() ? 0.6 : 1 }}
             >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" style={{ stroke: colors.accentText }} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+              <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" style={{ stroke: colors.accentText }} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
                 <line x1="12" y1="19" x2="12" y2="5"></line>
                 <polyline points="5 12 12 5 19 12"></polyline>
               </svg>
