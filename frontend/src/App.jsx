@@ -56,6 +56,7 @@ export default function App() {
   const [theme, setTheme] = useState(loadTheme)
   const fileInputRef = useRef(null)
   const scrollRef = useRef(null)
+  const endRef = useRef(null)
   // Bumped whenever the user opens another chat or starts a new one. A reply
   // that arrives after that belongs to the chat it was sent from, which
   // loads it from the server when reopened, so it isn't added to this view.
@@ -134,9 +135,16 @@ export default function App() {
     }
   }, [theme])
 
+  // Keep the newest message (and the "Thinking…" line) in view. On a narrow
+  // screen the whole page scrolls instead, so go to its end, where the input is.
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
-  }, [messages])
+    const page = document.scrollingElement
+    if (page && page.scrollHeight > window.innerHeight) {
+      window.scrollTo({ top: page.scrollHeight, behavior: 'smooth' })
+    } else {
+      endRef.current?.scrollIntoView({ block: 'end', behavior: 'smooth' })
+    }
+  }, [messages, sending, error])
 
   function persistActiveThread(id) {
     viewRef.current += 1
@@ -297,9 +305,12 @@ export default function App() {
   }
 
   return (
-    <div style={{ minHeight: '100vh', width: '100%', display: 'flex', flexWrap: 'wrap', fontFamily: fonts.body, background: colors.bluebg, color: colors.textMain }}>
+    // The page itself never scrolls on a wide screen: the chat list and the
+    // messages scroll inside their columns, so the input box stays in view
+    // (on a narrow screen the columns stack and the page scrolls; theme.js).
+    <div className="app-shell" style={{ width: '100%', display: 'flex', flexWrap: 'wrap', fontFamily: fonts.body, background: colors.bluebg, color: colors.textMain }}>
       {/* Sidebar */}
-      <div style={{ width: 272, flex: '0 0 272px', background: colors.sidebarBg, borderRight: `1px solid ${colors.border}`, display: 'flex', flexDirection: 'column', padding: '24px 18px' }}>
+      <div className="app-side" style={{ width: 272, flex: '0 0 272px', background: colors.sidebarBg, borderRight: `1px solid ${colors.border}`, display: 'flex', flexDirection: 'column', padding: '24px 18px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '0 6px 22px', borderBottom: `1px solid ${colors.borderSoft}`, marginBottom: 18 }}>
           <div style={{ width: 30, height: 30, borderRadius: 8, background: colors.accent, flexShrink: 0 }} />
           <div>
@@ -318,7 +329,7 @@ export default function App() {
         <div style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', color: colors.textMuted, padding: '0 6px 10px' }}>
           Your chats
         </div>
-        <div style={{ overflowY: 'auto', flex: 1 }}>
+        <div style={{ overflowY: 'auto', flex: 1, minHeight: 0 }}>
           {threads.length === 0 && (
             <div style={{ fontSize: 13, color: colors.textFaint, padding: '0 10px' }}>No chats yet</div>
           )}
@@ -356,7 +367,7 @@ export default function App() {
       </div>
 
       {/* Main column */}
-      <div style={{ flex: '999 1 560px', minWidth: 0, display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
+      <div className="app-main" style={{ flex: '999 1 560px', minWidth: 0, display: 'flex', flexDirection: 'column' }}>
         {/* Top bar */}
         <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end', gap: 12, padding: '18px 32px', borderBottom: `1px solid ${colors.border}`, background: colors.sidebarBg }}>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -384,7 +395,7 @@ export default function App() {
         </div>
 
         {/* Messages */}
-        <div ref={scrollRef} style={{ flex: '1 1 auto', padding: '32px 10% 20px', display: 'flex', flexDirection: 'column', gap: 22, overflowY: 'auto' }}>
+        <div ref={scrollRef} style={{ flex: '1 1 auto', minHeight: 0, padding: '32px 10% 20px', display: 'flex', flexDirection: 'column', gap: 22, overflowY: 'auto' }}>
           {messages.length === 0 && (
             <div style={{ color: colors.textFaint, fontSize: 14, textAlign: 'center', marginTop: 40 }}>
               Ask about OrbitOps docs, GitHub &amp; HackerNews, or the live cluster (pods, restarts, logs).
@@ -430,6 +441,7 @@ export default function App() {
             </div>
           )}
           {error && <div style={{ color: colors.error, fontSize: 13 }}>{error}</div>}
+          <div ref={endRef} />
         </div>
 
         {/* Input bar */}
