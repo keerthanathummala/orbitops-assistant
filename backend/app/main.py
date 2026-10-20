@@ -30,7 +30,8 @@ import json
 import os
 from typing import List, Optional
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from . import auth
@@ -162,6 +163,22 @@ def thread_messages(thread_id: str, user: dict = Depends(auth.current_user)):
 # Document upload (max 10 per session, added on top of the base corpus)
 # ---------------------------------------------------------------------------
 
+@app.middleware("http")
+async def reject_oversized_uploads(request: Request, call_next):
+    """Turn away an upload that says it is too big before its body is read
+    and spooled; the size check in upload_document still catches one that
+    doesn't say. (nginx also caps request bodies at 6 MB.)"""
+    if request.url.path == "/api/upload":
+        try:
+            length = int(request.headers.get("content-length", "0"))
+        except ValueError:
+            length = 0
+        if length > MAX_UPLOAD_BYTES + 64 * 1024:  # room for the form fields
+            return JSONResponse(status_code=413, content={
+                "detail": f"File too large — {MAX_UPLOAD_BYTES // (1024*1024)}MB max."})
+    return await call_next(request)
+
+
 @app.post("/api/upload")
 async def upload_document(thread_id: str = Form(...), file: UploadFile = File(...),
                           user: dict = Depends(auth.current_user)):
@@ -175,7 +192,8 @@ async def upload_document(thread_id: str = Form(...), file: UploadFile = File(..
     if session.uploaded_count >= rag_core.MAX_UPLOADS:
         raise HTTPException(400, f"Upload limit reached ({rag_core.MAX_UPLOADS} documents max).")
 
-    raw_bytes = await file.read()
+    # Read at most one byte past the limit rather than the whole file.
+    raw_bytes = await file.read(MAX_UPLOAD_BYTES + 1)
     if len(raw_bytes) > MAX_UPLOAD_BYTES:
         raise HTTPException(400, f"File too large — {MAX_UPLOAD_BYTES // (1024*1024)}MB max.")
 
