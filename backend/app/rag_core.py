@@ -30,6 +30,7 @@ from __future__ import annotations
 import os
 import re
 import json
+import threading
 import time
 from collections import OrderedDict
 from pathlib import Path
@@ -454,6 +455,11 @@ class RagSession:
         # Database ids of the uploads indexed on this pod, so additions and
         # removals made through any replica are picked up on the next sync.
         self.indexed_upload_ids: set = set()
+        # Requests for one chat can arrive together on this pod. Changes to
+        # the index happen under this lock and replace the lists/dicts rather
+        # than editing them, so a search running meanwhile keeps a
+        # consistent snapshot (see _snapshot).
+        self._lock = threading.RLock()
 
         base_docs = load_documents(DATA_DIR)
         self.chunks: List[Document] = chunk_documents(base_docs)
@@ -474,13 +480,11 @@ class RagSession:
         self.sync_uploads()
 
     def add_uploaded_document(self, filename: str, raw_text: str) -> None:
-        # The limit is checked against the shared database, not this pod's
-        # own count, so it holds across replicas.
-        self.sync_uploads()
-        if store.count_uploads(self.thread_id) >= MAX_UPLOADS:
+        # The limit is checked by the database in the same step as the insert,
+        # so two uploads arriving together on any replicas can't both take
+        # the last slot.
+        if not store.add_upload_if_room(self.thread_id, filename, raw_text, MAX_UPLOADS):
             raise ValueError(f"Upload limit reached ({MAX_UPLOADS} documents max per session).")
-
-        store.add_upload(self.thread_id, filename, raw_text)
         self.sync_uploads()
 
     @property
@@ -491,14 +495,20 @@ class RagSession:
         """Bring this pod's index in line with the thread's uploads in the
         database: index new ones and drop removed ones, whichever replica
         handled the change."""
-        current = set(store.get_upload_ids(self.thread_id))
-        removed = self.indexed_upload_ids - current
-        if removed:
-            self._remove_uploads(removed)
-        for upload_id in sorted(current - self.indexed_upload_ids):
-            upload = store.get_upload(self.thread_id, upload_id)
-            if upload:
-                self._index_upload(upload_id, upload["filename"], upload["content"])
+        with self._lock:
+            current = set(store.get_upload_ids(self.thread_id))
+            removed = self.indexed_upload_ids - current
+            if removed:
+                self._remove_uploads(removed)
+            for upload_id in sorted(current - self.indexed_upload_ids):
+                upload = store.get_upload(self.thread_id, upload_id)
+                if upload:
+                    self._index_upload(upload_id, upload["filename"], upload["content"])
+
+    def _snapshot(self):
+        """Chunks, BM25 index and full texts that belong together."""
+        with self._lock:
+            return self.chunks, self.bm25_index, self.raw_docs
 
     def _remove_uploads(self, upload_ids: set) -> None:
         doc_ids = {f"upload_{i}" for i in upload_ids}
@@ -506,9 +516,8 @@ class RagSession:
         gone = [c.metadata["chunk_id"] for c in self.chunks if c.metadata["doc_id"] in doc_ids]
         self.chunks = [self.chunks[i] for i in keep]
         self.embeddings = self.embeddings[keep] if len(keep) else self.embeddings[:0]
-        for doc_id in doc_ids:
-            self.raw_docs.pop(doc_id, None)
-        self.indexed_upload_ids -= upload_ids
+        self.raw_docs = {k: v for k, v in self.raw_docs.items() if k not in doc_ids}
+        self.indexed_upload_ids = self.indexed_upload_ids - upload_ids
         self.bm25_index, _ = build_bm25_index(self.chunks) if self.chunks else (None, None)
         if gone:
             try:
@@ -529,9 +538,9 @@ class RagSession:
             "source_file": filename,
         }
         new_chunks = chunk_documents([doc_dict], doc_id_prefix="")
-        self.chunks.extend(new_chunks)
-        self.raw_docs[doc_dict["doc_id"]] = raw_text
-        self.indexed_upload_ids.add(upload_id)
+        self.chunks = self.chunks + new_chunks
+        self.raw_docs = {**self.raw_docs, doc_dict["doc_id"]: raw_text}
+        self.indexed_upload_ids = self.indexed_upload_ids | {upload_id}
 
         # Rebuild BM25 (cheap at this corpus size) and extend dense + chroma indexes.
         self.bm25_index, _ = build_bm25_index(self.chunks)
@@ -548,8 +557,9 @@ class RagSession:
         clean_query, flagged = guardrails.sanitise_query(query)
         if flagged:
             return []
+        chunks, bm25_index, _ = self._snapshot()
         return hybrid_retrieve(
-            clean_query, self.chunks, self.bm25_index, self.embeddings, self.model,
+            clean_query, chunks, bm25_index, self.embeddings, self.model,
             self.collection_name, top_k=top_k,
         )
 
@@ -563,11 +573,12 @@ class RagSession:
         # multiple strangers able to reach this app once deployed, the RAG
         # path needed the same prompt-injection/length checks.
         clean_query, flagged = guardrails.sanitise_query(query)
+        chunks, bm25_index, raw_docs = self._snapshot()
         if flagged:
             return {
                 "answer": "This message was rejected by input safety checks.",
                 "citations": [],
-                "docs_indexed": len(set(c.metadata["doc_id"] for c in self.chunks)),
+                "docs_indexed": len(set(c.metadata["doc_id"] for c in chunks)),
             }
 
         # Exact-count questions ("how many times does X appear/occur") can't
@@ -575,15 +586,15 @@ class RagSession:
         # from the full stored document text instead of asking the LLM to
         # count within a partial context it was shown.
         count_target = extract_count_target(clean_query)
-        if count_target and self.raw_docs:
-            total = count_occurrences(count_target, self.raw_docs)
+        if count_target and raw_docs:
+            total = count_occurrences(count_target, raw_docs)
             return {
                 "answer": (
                     f'"{count_target}" occurs {total} time{"s" if total != 1 else ""} '
                     f"across the indexed document(s) (exact count, not an LLM estimate)."
                 ),
                 "citations": [],
-                "docs_indexed": len(set(c.metadata["doc_id"] for c in self.chunks)),
+                "docs_indexed": len(set(c.metadata["doc_id"] for c in chunks)),
             }
 
         # A follow-up like "what's the second step?" names nothing to search
@@ -591,7 +602,7 @@ class RagSession:
         previous = [m["content"] for m in (history or []) if m.get("role") == "user"]
         search_query = f"{previous[-1][:300]} {clean_query}" if previous else clean_query
         retrieved = hybrid_retrieve(
-            search_query, self.chunks, self.bm25_index, self.embeddings, self.model,
+            search_query, chunks, bm25_index, self.embeddings, self.model,
             self.collection_name, top_k=top_k,
         )
         history_text = format_history(history)
@@ -613,7 +624,7 @@ class RagSession:
             for d in retrieved[:3]
         ]
         return {"answer": answer_text, "citations": citations, "docs_indexed": len(set(
-            c.metadata["doc_id"] for c in self.chunks
+            c.metadata["doc_id"] for c in chunks
         ))}
 
 
@@ -622,6 +633,7 @@ class RagSession:
 # next time it is used, so memory stays bounded however many chats exist.
 MAX_SESSIONS = int(os.environ.get("MAX_RAG_SESSIONS", "50"))
 _sessions: "OrderedDict[str, RagSession]" = OrderedDict()
+_sessions_lock = threading.RLock()
 
 
 PRUNE_EVERY_SECONDS = 60
@@ -648,18 +660,21 @@ def _prune_deleted_sessions() -> None:
 def get_or_create_session(thread_id: str) -> RagSession:
     """The thread's index, built on first use. Only chats saved in the
     database get one, so made-up thread ids can't fill memory or Chroma."""
-    _prune_deleted_sessions()
-    session = _sessions.get(thread_id)
-    if session is None:
-        if not store.existing_thread_ids([thread_id]):
-            raise LookupError(f"No chat {thread_id}")
-        session = RagSession(thread_id)
-        _sessions[thread_id] = session
-        while len(_sessions) > MAX_SESSIONS:
-            _sessions.popitem(last=False)
-    else:
+    with _sessions_lock:
+        _prune_deleted_sessions()
+        session = _sessions.get(thread_id)
+        if session is None:
+            if not store.existing_thread_ids([thread_id]):
+                raise LookupError(f"No chat {thread_id}")
+            # Built under the lock so two first requests for a chat don't
+            # both build (and both write to Chroma).
+            session = RagSession(thread_id)
+            _sessions[thread_id] = session
+            while len(_sessions) > MAX_SESSIONS:
+                _sessions.popitem(last=False)
+            return session
         _sessions.move_to_end(thread_id)
-        session.sync_uploads()
+    session.sync_uploads()
     return session
 
 
@@ -671,7 +686,8 @@ def base_docs_count() -> int:
 def drop_session(thread_id: str) -> None:
     """Forget a deleted thread's index on this pod and remove its shared
     Chroma collection. Other pods drop theirs on their next prune."""
-    session = _sessions.pop(thread_id, None)
+    with _sessions_lock:
+        session = _sessions.pop(thread_id, None)
     try:
         reset_collection(session.collection_name if session else f"session_{thread_id}")
     except Exception:

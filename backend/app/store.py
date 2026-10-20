@@ -413,20 +413,21 @@ def get_agent_history(thread_id: str, max_turns: int = 10) -> List[dict]:
 # Uploaded documents (extracted text), shared by every backend replica
 # ---------------------------------------------------------------------------
 
-def add_upload(thread_id: str, filename: str, content: str) -> None:
+def add_upload_if_room(thread_id: str, filename: str, content: str, max_uploads: int) -> bool:
+    """Adds the upload unless the chat already has max_uploads; False if
+    full. On MySQL the chat's row is locked first, so uploads to one chat
+    are counted one at a time; SQLite runs one write at a time anyway."""
     with _conn() as conn:
+        if conn.mysql:
+            conn.execute("SELECT thread_id FROM threads WHERE thread_id = ? FOR UPDATE", (thread_id,))
+        row = conn.execute("SELECT COUNT(*) AS c FROM uploads WHERE thread_id = ?", (thread_id,)).fetchone()
+        if int(row["c"]) >= max_uploads:
+            return False
         conn.execute(
             "INSERT INTO uploads (thread_id, filename, content, created_at) VALUES (?, ?, ?, ?)",
             (thread_id, filename[:255], content, datetime.now(timezone.utc).isoformat()),
         )
-
-
-def count_uploads(thread_id: str) -> int:
-    with _conn() as conn:
-        row = conn.execute(
-            "SELECT COUNT(*) AS c FROM uploads WHERE thread_id = ?", (thread_id,)
-        ).fetchone()
-        return int(row["c"])
+        return True
 
 
 def get_upload_ids(thread_id: str) -> List[int]:
