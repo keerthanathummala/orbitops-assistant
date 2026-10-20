@@ -27,6 +27,7 @@ import httpx
 from . import rag_core
 from . import agent_core
 from . import cluster_ops
+from . import store
 
 # On Kubernetes, cluster questions go to the separate ops service, the only
 # pods allowed to read the cluster. Unset (local dev), cluster_ops runs here.
@@ -117,7 +118,7 @@ def handle_message(thread_id: str, query: str) -> dict:
 
     if route in ("rag", "both"):
         rag_session = rag_core.get_or_create_session(thread_id)
-        rag_result = rag_session.answer(query)
+        rag_result = rag_session.answer(query, history=store.get_messages(thread_id))
         segments.append({
             "source": "rag",
             "text": rag_result["answer"],

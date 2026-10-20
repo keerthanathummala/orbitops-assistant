@@ -355,26 +355,50 @@ def build_context(results: List[Document], max_chunks: int = 4) -> str:
     return "\n\n".join(parts)
 
 
-def build_prompt(question: str, context: str) -> str:
-    return f"""You are a helpful technical assistant for the OrbitOps team.
-Use the provided context to answer the user's question.
+HISTORY_TURNS = 6           # earlier messages shown to the model
+HISTORY_CHARS = 600         # per message, so a long answer can't crowd out the docs
 
+
+def format_history(history: Optional[List[dict]]) -> str:
+    """The last few messages of this chat as plain text, oldest first, so
+    follow-ups ("what about step 2?") and things the user said earlier
+    ("call me Key") are understood."""
+    lines = []
+    for m in (history or [])[-HISTORY_TURNS:]:
+        who = "User" if m.get("role") == "user" else "Assistant"
+        text = " ".join((m.get("content") or "").split())
+        lines.append(f"{who}: {text[:HISTORY_CHARS]}")
+    return "\n".join(lines)
+
+
+def build_prompt(question: str, context: str, history: str = "") -> str:
+    conversation = f"""
+EARLIER IN THIS CHAT:
+{history}
+---
+""" if history else ""
+    return f"""You are the OrbitOps Assistant, a technical assistant for the OrbitOps team.
+Use the provided context to answer the user's question.
+{conversation}
 ---
 CONTEXT:
 {context}
 ---
 
 INSTRUCTIONS:
-1. Answer the question using ONLY the information in the context above.
-2. If the answer is not contained in the context, state that you do not have enough information.
-3. Reference the [doc_id] and title when providing specific details.
+1. Answer questions about OrbitOps using ONLY the information in the context above.
+2. Use the earlier messages to understand follow-up questions, and to answer
+   questions about the chat itself (for example a name the user asked you to use).
+3. If the answer is in neither, state that you do not have enough information.
+4. Reference the [doc_id] and title when providing specific details. Write
+   citations as plain text like [OO-001]; never add links or URLs.
 
 QUESTION: {question}
 
 ANSWER:"""
 
 
-def build_no_context_prompt(question: str) -> str:
+def build_no_context_prompt(question: str, history: str = "") -> str:
     """Used when retrieval finds nothing to ground on -- either no documents
     are indexed yet, or the question is just conversational ("hi", "thanks").
     Without this, the bot could never reply to a plain greeting: it would hit
@@ -384,26 +408,30 @@ def build_no_context_prompt(question: str) -> str:
 documents matched this message (either none are indexed yet, or the message
 isn't a documentation question).
 
-- If this is a greeting or general chat, just respond naturally and briefly.
+- If this is a greeting or general chat, just respond naturally and briefly,
+  taking the earlier messages below into account.
 - If it reads like a real question about OrbitOps docs/procedures, say you
   don't have any indexed documents to answer that from yet, and suggest the
   user upload one via Attach.
+
+EARLIER IN THIS CHAT:
+{history or "(none)"}
 
 MESSAGE: {question}
 
 ANSWER:"""
 
 
-def generate_answer_from_context(query: str, retrieved_chunks: List[Document]) -> str:
+def generate_answer_from_context(query: str, retrieved_chunks: List[Document], history: str = "") -> str:
     """Real local LLM call (qwen2.5:7b via Ollama). Always calls the LLM --
     previously this returned a hardcoded string with no retrieved chunks,
     which meant a plain "hi" (no docs indexed, no retrieval hits) never
     reached the model at all."""
     if not retrieved_chunks:
-        prompt = build_no_context_prompt(query)
+        prompt = build_no_context_prompt(query, history)
     else:
         context = build_context(retrieved_chunks, max_chunks=12)
-        prompt = build_prompt(query, context)
+        prompt = build_prompt(query, context, history)
 
     return llm.generate(prompt)
 
@@ -523,7 +551,7 @@ class RagSession:
             self.collection_name, top_k=top_k,
         )
 
-    def answer(self, query: str, top_k: int = 12) -> dict:
+    def answer(self, query: str, top_k: int = 12, history: Optional[List[dict]] = None) -> dict:
         # top_k was 4 (fine for the short original OrbitOps docs, ~180-char
         # chunks each). Once uploads can be full reports (10-20 pages, 150+
         # chunks), 4 is too small a slice to reliably contain the right
@@ -556,17 +584,24 @@ class RagSession:
                 "docs_indexed": len(set(c.metadata["doc_id"] for c in self.chunks)),
             }
 
+        # A follow-up like "what's the second step?" names nothing to search
+        # for, so retrieval also uses the user's previous message.
+        previous = [m["content"] for m in (history or []) if m.get("role") == "user"]
+        search_query = f"{previous[-1][:300]} {clean_query}" if previous else clean_query
         retrieved = hybrid_retrieve(
-            clean_query, self.chunks, self.bm25_index, self.embeddings, self.model,
+            search_query, self.chunks, self.bm25_index, self.embeddings, self.model,
             self.collection_name, top_k=top_k,
         )
-        answer_text = generate_answer_from_context(clean_query, retrieved)
+        history_text = format_history(history)
+        answer_text = generate_answer_from_context(clean_query, retrieved, history_text)
 
         # Anti-hallucination: only meaningful when there was actual context to
         # be grounded on -- a no-context chitchat reply isn't "unfaithful",
         # it was never supposed to cite anything.
         if retrieved:
-            source_text = build_context(retrieved, max_chunks=12)
+            # The chat so far counts as a source too: an answer that repeats
+            # what the user said earlier isn't a hallucination.
+            source_text = build_context(retrieved, max_chunks=12) + "\n" + history_text
             check = guardrails.faithfulness_check(answer_text, source_text)
             if check["flag"] == "weak":
                 answer_text += guardrails.HALLUCINATION_NOTICE
