@@ -42,6 +42,12 @@ MAX_OUTPUT_TOKENS = 4096
 LLM_TIMEOUT_SECONDS = 50
 LLM_MAX_RETRIES = 1
 
+# Gemini 3 models "think" before answering, at a high level by default, which
+# made some answers take over 50 s (Google then returns 504 DEADLINE_EXCEEDED).
+# Answering from retrieved docs or search results needs little reasoning, so
+# use a low level; GEMINI_THINKING_LEVEL can raise it (minimal|low|medium|high).
+GEMINI_THINKING_LEVEL = os.environ.get("GEMINI_THINKING_LEVEL", "low").lower()
+
 _llms: Dict[float, object] = {}
 
 
@@ -58,7 +64,8 @@ def _build(temperature: float):
         raise RuntimeError("LLM_PROVIDER=gemini but GEMINI_API_KEY is not set.")
     return ChatGoogleGenerativeAI(model=GEMINI_MODEL, google_api_key=api_key,
                                   temperature=temperature, max_output_tokens=MAX_OUTPUT_TOKENS,
-                                  timeout=LLM_TIMEOUT_SECONDS, max_retries=LLM_MAX_RETRIES)
+                                  timeout=LLM_TIMEOUT_SECONDS, max_retries=LLM_MAX_RETRIES,
+                                  thinking_level=GEMINI_THINKING_LEVEL)
 
 
 def status() -> dict:
@@ -82,6 +89,21 @@ def is_quota_error(exc: BaseException) -> bool:
     limit, not something the current user did."""
     text = f"{type(exc).__name__} {exc}"
     return any(s in text for s in ("429", "RESOURCE_EXHAUSTED", "ResourceExhausted", "quota"))
+
+
+def is_unavailable_error(exc: BaseException) -> bool:
+    """True when the provider timed out or failed on its side (a 5xx such as
+    504 DEADLINE_EXCEEDED or 503 UNAVAILABLE, or no reply in time). Worth
+    retrying in a moment, and not a bug in the app."""
+    text = f"{type(exc).__name__} {exc}"
+    return any(s in text for s in (
+        "DEADLINE_EXCEEDED", "UNAVAILABLE", "INTERNAL", "Timeout", "timed out",
+        "500 ", "502 ", "503 ", "504 ",
+    ))
+
+
+UNAVAILABLE_MESSAGE = ("The AI model took too long to answer or is busy right now. "
+                       "Please try again in a moment.")
 
 
 QUOTA_MESSAGE = ("The AI model's free usage limit has been reached for now. "

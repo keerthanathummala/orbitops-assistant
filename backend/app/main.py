@@ -130,6 +130,8 @@ def chat(req: ChatRequest, user: dict = Depends(auth.current_user)):
     except Exception as e:
         if llm.is_quota_error(e):
             raise HTTPException(429, llm.QUOTA_MESSAGE)
+        if llm.is_unavailable_error(e):
+            raise HTTPException(503, llm.UNAVAILABLE_MESSAGE)
         raise
     store.add_message(thread_id, "user", req.message)
 
