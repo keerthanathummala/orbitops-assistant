@@ -338,6 +338,17 @@ def get_messages(thread_id: str) -> List[dict]:
         return messages
 
 
+def existing_thread_ids(thread_ids: List[str]) -> set:
+    """Which of these chats still exist."""
+    if not thread_ids:
+        return set()
+    with _conn() as conn:
+        marks = ", ".join("?" for _ in thread_ids)
+        rows = conn.execute(f"SELECT thread_id FROM threads WHERE thread_id IN ({marks})",
+                            tuple(thread_ids)).fetchall()
+        return {r["thread_id"] for r in rows}
+
+
 def list_threads(user_id: int) -> List[dict]:
     """The signed-in user's own threads, most recently active first."""
     with _conn() as conn:

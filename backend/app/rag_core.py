@@ -30,6 +30,7 @@ from __future__ import annotations
 import os
 import re
 import json
+import time
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
@@ -619,7 +620,29 @@ class RagSession:
 _sessions: Dict[str, RagSession] = {}
 
 
+PRUNE_EVERY_SECONDS = 60
+_last_prune = 0.0
+
+
+def _prune_deleted_sessions() -> None:
+    """Forget indexes of chats that no longer exist in the database. When the
+    admin deletes an account, only one chat pod is told directly; every other
+    chat and ops pod catches up here within a minute."""
+    global _last_prune
+    if time.monotonic() - _last_prune < PRUNE_EVERY_SECONDS or not _sessions:
+        return
+    _last_prune = time.monotonic()
+    try:
+        existing = store.existing_thread_ids(list(_sessions))
+    except Exception:
+        return
+    for thread_id in list(_sessions):
+        if thread_id not in existing:
+            _sessions.pop(thread_id, None)
+
+
 def get_or_create_session(thread_id: str) -> RagSession:
+    _prune_deleted_sessions()
     if thread_id not in _sessions:
         _sessions[thread_id] = RagSession(thread_id)
     else:
@@ -629,7 +652,7 @@ def get_or_create_session(thread_id: str) -> RagSession:
 
 def drop_session(thread_id: str) -> None:
     """Forget a deleted thread's index on this pod and remove its shared
-    Chroma collection. Other pods drop theirs when they restart."""
+    Chroma collection. Other pods drop theirs on their next prune."""
     session = _sessions.pop(thread_id, None)
     try:
         reset_collection(session.collection_name if session else f"session_{thread_id}")
