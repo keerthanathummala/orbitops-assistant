@@ -608,10 +608,14 @@ class RagSession:
         history_text = format_history(history)
         answer_text = generate_answer_from_context(clean_query, retrieved, history_text)
 
+        # "I do not have enough information" used nothing from the docs, so
+        # listing sources or flagging it as unsupported would be misleading.
+        no_answer = "not have enough information" in answer_text.lower()
+
         # Anti-hallucination: only meaningful when there was actual context to
         # be grounded on -- a no-context chitchat reply isn't "unfaithful",
         # it was never supposed to cite anything.
-        if retrieved:
+        if retrieved and not no_answer:
             # The chat so far counts as a source too: an answer that repeats
             # what the user said earlier isn't a hallucination.
             source_text = build_context(retrieved, max_chunks=12) + "\n" + history_text
@@ -619,10 +623,15 @@ class RagSession:
             if check["flag"] == "weak":
                 answer_text += guardrails.HALLUCINATION_NOTICE
 
-        citations = [
-            {"doc_id": d.metadata.get("doc_id"), "title": d.metadata.get("title")}
-            for d in retrieved[:3]
-        ]
+        # Several retrieved chunks often come from the same document; list
+        # each document once.
+        citations = []
+        for d in [] if no_answer else retrieved:
+            doc_id = d.metadata.get("doc_id")
+            if doc_id not in {c["doc_id"] for c in citations}:
+                citations.append({"doc_id": doc_id, "title": d.metadata.get("title")})
+            if len(citations) == 3:
+                break
         return {"answer": answer_text, "citations": citations, "docs_indexed": len(set(
             c.metadata["doc_id"] for c in chunks
         ))}
