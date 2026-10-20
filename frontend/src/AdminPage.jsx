@@ -63,7 +63,7 @@ export default function AdminPage({ onBack }) {
       <div style={{ fontSize: 13, color: colors.textMuted, marginBottom: 24 }}>
         Who has an account, when they signed in and from which IP address. Chats are private: this page can't open them.
       </div>
-      {error && <div style={{ color: colors.error, fontSize: 13, marginBottom: 16 }}>{error}</div>}
+      {error && <div role="alert" style={{ color: colors.error, fontSize: 13, marginBottom: 16 }}>{error}</div>}
 
       <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 10 }}>Users · {users.length}</div>
       <div style={card}>
@@ -84,7 +84,7 @@ export default function AdminPage({ onBack }) {
                 <td style={td}>{u.logins}</td>
                 <td style={{ ...td, textAlign: 'right' }}>
                   {!u.is_admin && (
-                    <button onClick={() => handleDelete(u)} style={{ fontSize: 12.5, color: colors.error, background: 'transparent', border: `1px solid ${colors.border}`, borderRadius: 7, padding: '5px 10px', cursor: 'pointer', fontFamily: 'inherit' }}>
+                    <button onClick={() => handleDelete(u)} aria-label={`Delete ${u.username}`} style={{ fontSize: 12.5, color: colors.error, background: 'transparent', border: `1px solid ${colors.border}`, borderRadius: 7, padding: '5px 10px', cursor: 'pointer', fontFamily: 'inherit' }}>
                       Delete
                     </button>
                   )}

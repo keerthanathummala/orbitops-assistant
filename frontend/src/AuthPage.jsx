@@ -5,7 +5,7 @@ import { signIn, signUp } from './api'
 const inputStyle = {
   width: '100%', boxSizing: 'border-box', fontSize: 14.5, padding: '11px 12px', borderRadius: 8,
   border: `1px solid ${colors.border}`, background: colors.white, color: colors.textMain,
-  fontFamily: fonts.body, outline: 'none',
+  fontFamily: fonts.body,
 }
 
 export default function AuthPage({ onSignedIn }) {
@@ -41,16 +41,16 @@ export default function AuthPage({ onSignedIn }) {
 
         <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 16 }}>{isSignIn ? 'Sign in' : 'Create an account'}</div>
 
-        <label style={{ display: 'block', fontSize: 12.5, color: colors.textSecondary, marginBottom: 6 }}>Username</label>
-        <input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" autoFocus style={{ ...inputStyle, marginBottom: 14 }} />
+        <label htmlFor="auth-username" style={{ display: 'block', fontSize: 12.5, color: colors.textSecondary, marginBottom: 6 }}>Username</label>
+        <input id="auth-username" value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" autoFocus style={{ ...inputStyle, marginBottom: 14 }} />
 
-        <label style={{ display: 'block', fontSize: 12.5, color: colors.textSecondary, marginBottom: 6 }}>Password</label>
-        <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete={isSignIn ? 'current-password' : 'new-password'} style={inputStyle} />
+        <label htmlFor="auth-password" style={{ display: 'block', fontSize: 12.5, color: colors.textSecondary, marginBottom: 6 }}>Password</label>
+        <input id="auth-password" type="password" value={password} aria-describedby={isSignIn ? undefined : 'auth-password-hint'} onChange={(e) => setPassword(e.target.value)} autoComplete={isSignIn ? 'current-password' : 'new-password'} style={inputStyle} />
         {!isSignIn && (
-          <div style={{ fontSize: 11.5, color: colors.textMuted, marginTop: 6 }}>At least 8 characters.</div>
+          <div id="auth-password-hint" style={{ fontSize: 11.5, color: colors.textMuted, marginTop: 6 }}>At least 8 characters.</div>
         )}
 
-        {error && <div style={{ color: colors.error, fontSize: 13, marginTop: 14 }}>{error}</div>}
+        {error && <div role="alert" style={{ color: colors.error, fontSize: 13, marginTop: 14 }}>{error}</div>}
 
         <button
           type="submit"

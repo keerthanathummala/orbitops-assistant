@@ -81,6 +81,8 @@ export const themeCss = `
 body{background:var(--c-bluebg);}
 input::placeholder{color:var(--c-placeholder);}
 .md>:last-child{margin-bottom:0 !important;}
+:focus-visible{outline:2px solid var(--c-accent);outline-offset:2px;}
+.chat-box:focus-within{outline:2px solid var(--c-accent);outline-offset:1px;}
 .app-shell{height:100vh;height:100dvh;overflow:hidden;}
 .app-shell>.app-side,.app-shell>.app-main{height:100%;box-sizing:border-box;}
 @media (max-width:860px){.app-shell{height:auto;min-height:100vh;overflow:visible;}.app-shell>.app-side,.app-shell>.app-main{height:auto;}.app-shell>.app-main{min-height:100vh;}}

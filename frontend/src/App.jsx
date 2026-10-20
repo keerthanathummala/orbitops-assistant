@@ -346,6 +346,7 @@ export default function App() {
             <a
               key={t.thread_id}
               href="#"
+              aria-current={t.thread_id === activeThread ? 'page' : undefined}
               onClick={(e) => { e.preventDefault(); handleSelectThread(t.thread_id) }}
               style={{
                 display: 'block', padding: '10px 10px', borderRadius: 7, fontSize: 13.5,
@@ -442,14 +443,14 @@ export default function App() {
             )
           )}
           {sending && pendingView === viewId && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, paddingLeft: 2 }}>
+            <div role="status" style={{ display: 'flex', alignItems: 'center', gap: 6, paddingLeft: 2 }}>
               <div style={{ width: 5, height: 5, borderRadius: '50%', background: colors.dot }} />
               <div style={{ width: 5, height: 5, borderRadius: '50%', background: colors.dot }} />
               <div style={{ width: 5, height: 5, borderRadius: '50%', background: colors.dot }} />
               <span style={{ fontSize: 11.5, color: colors.textMuted, marginLeft: 2 }}>Thinking…</span>
             </div>
           )}
-          {error && <div style={{ color: colors.error, fontSize: 13 }}>{error}</div>}
+          {error && <div role="alert" style={{ color: colors.error, fontSize: 13 }}>{error}</div>}
           <div ref={endRef} />
         </div>
 
@@ -477,15 +478,16 @@ export default function App() {
               ))}
             </div>
           )}
-          <div style={{ background: colors.white, border: `1px solid ${colors.border}`, borderRadius: 14, padding: '10px 10px 10px 18px', display: 'flex', alignItems: 'center', gap: 10, boxShadow: '0 1px 2px rgba(28,42,56,0.05)' }}>
+          <div className="chat-box" style={{ background: colors.white, border: `1px solid ${colors.border}`, borderRadius: 14, padding: '10px 10px 10px 18px', display: 'flex', alignItems: 'center', gap: 10, boxShadow: '0 1px 2px rgba(28,42,56,0.05)' }}>
             <input
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() } }}
               placeholder="Ask about OrbitOps docs, GitHub & HackerNews, or the live cluster…"
+              aria-label="Message"
               style={{ flex: '1 1 auto', fontSize: 14.5, color: colors.textMain, border: 'none', outline: 'none', fontFamily: fonts.body, background: 'transparent' }}
             />
-            <input type="file" ref={fileInputRef} style={{ display: 'none' }} onChange={handleFileChange} accept=".txt,.md,.docx,.pdf" />
+            <input type="file" ref={fileInputRef} style={{ display: 'none' }} aria-hidden="true" tabIndex={-1} onChange={handleFileChange} accept=".txt,.md,.docx,.pdf" />
             <button
               onClick={() => fileInputRef.current?.click()}
               disabled={uploadedCount >= MAX_UPLOADS || uploading !== null}
@@ -496,9 +498,11 @@ export default function App() {
             <button
               onClick={handleSend}
               disabled={sending || !input.trim()}
+              aria-label="Send message"
+              title="Send"
               style={{ width: 38, height: 38, flexShrink: 0, borderRadius: 10, background: colors.accent, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: sending || !input.trim() ? 0.6 : 1 }}
             >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" style={{ stroke: colors.accentText }} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+              <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" style={{ stroke: colors.accentText }} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
                 <line x1="12" y1="19" x2="12" y2="5"></line>
                 <polyline points="5 12 12 5 19 12"></polyline>
               </svg>
