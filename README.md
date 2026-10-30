@@ -34,15 +34,8 @@ was written for INFS3208.
 
 ## Architecture
 
-```
-Browser ─> GCP load balancer ─> frontend (nginx + React)      2-4 pods
-                                  ├ /api/auth, /api/admin ─> auth     2-4 pods   accounts, admin page
-                                  ├ /api/ops ──────────────> ops      1 pod      health check, reads the cluster
-                                  └ /api/* ────────────────> backend  2-5 pods   chat, history, uploads
-                                                                 └ cluster questions ─> ops
-            MySQL (accounts, chats, uploads) · Chroma (vectors) · Redis (rate limits)
-            Gemini API · GitHub / HackerNews APIs · Kubernetes API (ops only, read-only)
-```
+<img width="1352" height="735" alt="image" src="https://github.com/user-attachments/assets/b0a8ae2d-621d-42b7-85a4-df00bafc8cf6" />
+
 
 - **Microservices.** Four app services and three stateful ones, each with
   its own Kubernetes Service. The chat, auth and ops services share one
