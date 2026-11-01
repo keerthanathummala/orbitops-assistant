@@ -243,3 +243,16 @@ def status(thread_id: str, user: dict = Depends(auth.current_user)):
     _require_own_thread(thread_id, user)
     docs_indexed = dispatcher.docs_indexed_count(thread_id)
     return {"docs_indexed": docs_indexed, "google_search": google_search.quota_status()}
+
+
+# ---------------------------------------------------------------------------
+# One-container hosting (Dockerfile at the repo root, e.g. Hugging Face
+# Spaces): this process also serves the built React app, so the browser
+# calls /api/... on the same origin and no nginx is needed. Mounted last so
+# every /api/ route above takes precedence.
+# ---------------------------------------------------------------------------
+
+STATIC_DIR = os.environ.get("STATIC_DIR", "")
+if STATIC_DIR and os.path.isdir(STATIC_DIR):
+    from fastapi.staticfiles import StaticFiles
+    app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="frontend")

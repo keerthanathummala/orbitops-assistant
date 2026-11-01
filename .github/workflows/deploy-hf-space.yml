@@ -1,0 +1,98 @@
+# Deploys OrbitOps Assistant to a free Hugging Face Space every time main
+# changes (or when run by hand from the Actions tab). Hugging Face builds the
+# root Dockerfile and serves the app at https://<user>-orbitops-assistant.hf.space
+#
+# Setup (once), in GitHub -> Settings -> Secrets and variables -> Actions:
+#   Secrets:   HF_TOKEN        Hugging Face access token with "Write" access
+#              GEMINI_API_KEY  from https://aistudio.google.com/apikey
+#              ADMIN_PASSWORD  password for the app's admin account
+#   Variables (optional):
+#              HF_SPACE        e.g. myname/orbitops-assistant (default:
+#                              <your HF username>/orbitops-assistant)
+#              ADMIN_USERNAME  default: admin
+# The keys are copied into the Space's own secrets; they never go in the repo
+# or the image. See HOSTING.md.
+name: Deploy to Hugging Face Space
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: hf-space-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Assemble the Space
+        run: |
+          mkdir -p space
+          cp -r Dockerfile .dockerignore backend frontend space/
+          # Hugging Face reads the Space's settings from this README header.
+          cat > space/README.md <<'MD'
+          ---
+          title: OrbitOps Assistant
+          emoji: 🛰️
+          colorFrom: indigo
+          colorTo: blue
+          sdk: docker
+          app_port: 7860
+          pinned: false
+          ---
+
+          OrbitOps Assistant, deployed from GitHub. Source and docs:
+          the GitHub repository's README.md and HOSTING.md.
+          MD
+
+      - name: Push to Hugging Face
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_SPACE: ${{ vars.HF_SPACE }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ADMIN_USERNAME: ${{ vars.ADMIN_USERNAME }}
+          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+        run: |
+          if [ -z "$HF_TOKEN" ]; then
+            echo "::warning::HF_TOKEN secret not set, so nothing was deployed. See HOSTING.md."
+            exit 0
+          fi
+          pip install --quiet "huggingface_hub>=0.25"
+          python - <<'PY'
+          import os
+          from huggingface_hub import HfApi
+
+          api = HfApi(token=os.environ["HF_TOKEN"])
+          space = os.environ.get("HF_SPACE") or f"{api.whoami()['name']}/orbitops-assistant"
+          api.create_repo(space, repo_type="space", space_sdk="docker", exist_ok=True)
+
+          secrets = {
+              "GEMINI_API_KEY": os.environ.get("GEMINI_API_KEY", ""),
+              "ADMIN_PASSWORD": os.environ.get("ADMIN_PASSWORD", ""),
+          }
+          for key, value in secrets.items():
+              if value:
+                  api.add_space_secret(space, key, value)
+              else:
+                  print(f"::warning::{key} secret not set; the app won't work fully without it.")
+          api.add_space_variable(space, "ADMIN_USERNAME", os.environ.get("ADMIN_USERNAME") or "admin")
+          api.add_space_variable(space, "LLM_PROVIDER", "gemini")
+
+          # Replace the Space's files with this commit's (one Space commit).
+          api.upload_folder(
+              repo_id=space, repo_type="space", folder_path="space",
+              delete_patterns="*",
+              commit_message=f"Deploy {os.environ['GITHUB_SHA'][:7]} from GitHub",
+          )
+          sub = space.replace("/", "-").replace("_", "-").replace(".", "-").lower()
+          print(f"Deployed. Space: https://huggingface.co/spaces/{space}")
+          print(f"App URL (after the build finishes): https://{sub}.hf.space")
+          PY

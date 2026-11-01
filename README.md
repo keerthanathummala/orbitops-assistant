@@ -58,6 +58,9 @@ was written for INFS3208.
 - **Persistence.** MySQL and Chroma run as StatefulSets with persistent
   disks, so accounts, chats and uploads survive pod restarts.
 
+[HOSTING.md](HOSTING.md) shows how to host a free public copy straight from
+GitHub (Hugging Face Spaces, redeployed on every push to `main`).
+
 [DEPLOY.md](DEPLOY.md) has the full deployment guide and the 4-minute demo,
 and [`commands.sh`](commands.sh) has every gcloud and kubectl command with a
 comment on each.
@@ -139,4 +142,6 @@ frontend/           React app and nginx config
 k8s/                Kubernetes manifests, applied in file-name order
 commands.sh         every gcloud / kubectl command, commented
 DEPLOY.md           deployment guide and demo script
+HOSTING.md          free hosting from GitHub (Hugging Face Spaces)
+Dockerfile          one-container build used for that hosting
 ```

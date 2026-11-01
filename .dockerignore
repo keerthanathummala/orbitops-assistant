@@ -1,0 +1,9 @@
+.git
+**/.venv
+**/.env
+**/__pycache__
+**/node_modules
+frontend/dist
+backend/app/chat_history.db
+backend/app/chroma_store
+k8s
